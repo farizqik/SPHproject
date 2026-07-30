@@ -1,7 +1,5 @@
 #include<iostream>
-#include<cmath>
-#include <string>
-#include <iomanip>
+
 #include <fstream>
 
 
@@ -12,9 +10,12 @@ int main ()
 {
     
     // parameters
+    
+    const double h = 1.0;
+    const double dx = 0.05;
+    /*const int N = (4*h/dx)+1;*/
     const int N = 401;
-    double h = 1.0;
-    double dx = 4*h/(N-1);
+
     const double PI = 3.14159265358979323846;
     double alphagauss = 1.0 / (sqrt(PI) * h);
     double alphacubic = 2.0 / (3.0 * h);
@@ -23,7 +24,6 @@ int main ()
     double PGauss[N];
     double PCubic[N];
     double PWedn[N];
-    string kernel;
 
 
     for (int i = 0; i < N; i++)
