@@ -13,12 +13,12 @@ int main ()
     
     // parameters
     
-    const double h = 0.5;
+    const double h = 0.2;
     const double dx = 0.1;
     const double dy = 0.1;
     /*const int N = (4*h/dx)+1;*/
-    const int Ncol = 201;
-    const int Nrow = 201;
+    const int Ncol = 101;
+    const int Nrow = 101;
 
 
     const double PI = 3.14159265358979323846;
@@ -36,6 +36,15 @@ int main ()
     double dPCubicY[Ncol][Nrow];
     double dPWednX[Ncol][Nrow];
     double dPWednY[Ncol][Nrow];
+
+    double L2PGauss = 0.0;
+    double L2PCubic = 0.0;
+    double L2PWedn = 0.0;
+
+    double L2normPGauss = 0.0;
+    double L2normPCubic = 0.0;
+    double L2normPWedn = 0.0;
+    
     string kernel;
 
     for (int i = 0; i < Ncol; i++)
@@ -77,8 +86,6 @@ int main ()
                 diry = ry/r;
             }
 
-            /*double dirx=(x[i][j]-x[k][l])/(abs(x[i][j]-x[k][l])+1e-10);
-            double diry=(y[i][j]-y[k][l])/(abs(y[i][j]-y[k][l])+1e-10);*/
 
             double WGauss = 0.0;
             double WCubic = 0.0;
@@ -138,23 +145,39 @@ int main ()
             dPCubicY[i][j] += dWCubicY*dx*dy;
             dPWednX[i][j] += dWWednX*dx*dy;
             dPWednY[i][j] += dWWednY*dx*dy;
-        }
-    }
 
-    cout << "x"<< "\t" << "y" << "\t" << "PGauss" << "\t" << "PCubic" << "\t" << "PWedn" << "\t" << "dPGaussX" << "\t" << "dPGaussY" << "\t" << "dPCubicX" << "\t" << "dPCubicY" << "\t" << "dPWednX" << "\t" << "dPWednY" <<  endl;
+            
+    
+        }
+        double errorPGauss = (pow(PGauss[i][j]-1.0,2));
+        double errorPCubic = (pow(PCubic[i][j]-1.0,2));
+        double errorPWedn = (pow(PWedn[i][j]-1.0,2));
+        L2PGauss += errorPGauss;
+        L2PCubic += errorPCubic;
+        L2PWedn += errorPWedn;    
+              
+        
+    }
+    L2normPGauss = sqrt(L2PGauss/(Ncol*Nrow));
+    L2normPCubic = sqrt(L2PCubic/(Ncol*Nrow));
+    L2normPWedn = sqrt(L2PWedn/(Ncol*Nrow));
+
+
+
+    cout << "x"<< "\t" << "y" << "\t" << "PGauss" << "\t" << "PCubic" << "\t" << "PWedn" << "\t" << "dPGaussX" << "\t" << "dPGaussY" << "\t" << "dPCubicX" << "\t" << "dPCubicY" << "\t" << "dPWednX" << "\t" << "dPWednY" << "\t" << "L2normPGauss" << "\t" << "L2normPCubic" << "\t" << "L2normPWedn" << endl;
     for (int i = 0; i < Ncol; i++)
     for (int j = 0; j < Nrow; j++)
         {
-            cout <<  x[i][j] << "\t" << y[i][j] << "\t" << PGauss[i][j] << "\t" << PCubic[i][j] << "\t" << PWedn[i][j] << "\t" << dPGaussX[i][j] << "\t" << dPGaussY[i][j] << "\t" << dPCubicX[i][j] << "\t" << dPCubicY[i][j] << "\t" << dPWednX[i][j] << "\t" << dPWednY[i][j] <<endl;
+            cout <<  x[i][j] << "\t" << y[i][j] << "\t" << PGauss[i][j] << "\t" << PCubic[i][j] << "\t" << PWedn[i][j] << "\t" << dPGaussX[i][j] << "\t" << dPGaussY[i][j] << "\t" << dPCubicX[i][j] << "\t" << dPCubicY[i][j] << "\t" << dPWednX[i][j] << "\t" << dPWednY[i][j] << "\t" << L2normPGauss << "\t" << L2normPCubic << "\t" << L2normPWedn << endl;
         }
 
     ofstream file("partuni2D.xls");
 
-    file << "x"<< "\t" << "y" << "\t" << "PGauss" << "\t" << "PCubic" << "\t" << "PWedn" << "\t" << "dPGaussX" << "\t" << "dPGaussY" << "\t" << "dPCubicX" << "\t" << "dPCubicY" << "\t" << "dPWednX" << "\t" << "dPWednY" <<  endl;
+    file << "x"<< "\t" << "y" << "\t"<< "\t" << "PGauss" << "\t" << "PCubic" << "\t" << "PWedn" << "\t" << "\t"<< "dPGaussX" << "\t" << "dPGaussY" << "\t" << "\t"<< "dPCubicX" << "\t" << "dPCubicY" << "\t"<< "\t" << "dPWednX" << "\t" << "dPWednY" << "\t" << "\t"<< "L2normPGauss" << "\t" << "L2normPCubic" << "\t" << "L2normPWedn" << endl;
     for (int i = 0; i < Ncol; i++)
     for (int j = 0; j < Nrow; j++)
         {
-            file << x[i][j] << "\t" << y[i][j] << "\t" << PGauss[i][j] << "\t" << PCubic[i][j] << "\t" << PWedn[i][j] <<"\t" << dPGaussX[i][j] << "\t" << dPGaussY[i][j] << "\t" << dPCubicX[i][j] << "\t" << dPCubicY[i][j]<< "\t"<< dPWednX[i][j]<<"\t"<< dPWednY[i][j]<< endl;
+            file << x[i][j] << "\t" << y[i][j] << "\t" << "\t"<< PGauss[i][j] << "\t" << PCubic[i][j] << "\t" << PWedn[i][j] <<"\t" << "\t"<< dPGaussX[i][j] << "\t" << dPGaussY[i][j] << "\t" << "\t"<< dPCubicX[i][j] << "\t" << dPCubicY[i][j]<< "\t"<< "\t"<< dPWednX[i][j]<<"\t"<< dPWednY[i][j]<< "\t"<< "\t" << L2normPGauss << "\t" << L2normPCubic << "\t" << L2normPWedn<< endl;
         }
     file.close();
 }
