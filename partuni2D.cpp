@@ -26,8 +26,8 @@ int main ()
         const double dx = 0.1;
         const double dy = 0.1;
         /*const int N = (4*h/dx)+1;*/
-        const int Ncol = 50;
-        const int Nrow = 50;
+        const int Ncol = 60;
+        const int Nrow = 60;
 
 
         const double PI = 3.14159265358979323846;
