@@ -15,6 +15,8 @@ int main ()
     const int Nh = 4;
     double hlist[Nh] = {0.12, 0.15, 0.18, 0.2};
 
+    
+
     for (int m = 0; m < Nh; m++)
     {
         double h = hlist[m];
@@ -26,9 +28,8 @@ int main ()
         const double dx = 0.1;
         const double dy = 0.1;
         /*const int N = (4*h/dx)+1;*/
-        const int Ncol = 60;
-        const int Nrow = 60;
-
+        const int Ncol = 50;
+        const int Nrow = 50;
 
         const double PI = 3.14159265358979323846;
         double alphagauss = 1.0 / (PI * h * h);
@@ -57,7 +58,7 @@ int main ()
         string kernel;
 
         
-
+        
         for (int i = 0; i < Ncol; i++)
         for (int j = 0; j < Nrow; j++)
         {
@@ -65,14 +66,16 @@ int main ()
             y[i][j] =  j * dy;
         }
 
+        
         for (int i = 0; i < Ncol; i++)
         for (int j = 0; j < Nrow; j++)
         {
+            
             PGauss[i][j] = 0.0;
             PCubic[i][j] = 0.0;
             PWedn[i][j] = 0.0;
             dPGaussX[i][j] = 0.0;
-            dPGaussY[i][j] = 0.0;
+            dPGaussY[i][j] = 0.0; 
             dPCubicX[i][j] = 0.0;
             dPCubicY[i][j] = 0.0;
             dPWednX[i][j] = 0.0;
@@ -97,7 +100,7 @@ int main ()
                     diry = ry/r;
                 }
 
-
+ 
                 double WGauss = 0.0;
                 double WCubic = 0.0;
                 double WWedn = 0.0;
