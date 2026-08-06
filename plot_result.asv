@@ -185,7 +185,7 @@ for n = 1:nFiles
     % ======================================================
     figGrad = figure( ...
         'Name',sprintf('Kernel gradients, dx/h = %.6f',dxh), ...
-        'Position',[100 50 800 900]);
+        'Position',[100 50 1000 900]);
 
     tiledlayout(3,2,'TileSpacing','compact','Padding','compact');
 
@@ -364,15 +364,7 @@ fprintf('\nAll plots have been created.\n');
 fprintf('Results are saved in the folder: %s\n',outputFolder);
 
 
+output_path = Path('/mnt/data/plot_all_SPH_2D.m');
+output_path.write_text(matlab_code, encoding='utf-8')
 
-% 
-% output_path = fullfile(pwd,'plot_all_SPH_2D.m');
-% fid = fopen(output_path,'w','n','UTF-8');
-% if fid == -1
-%     error('Cannot open %s for writing.', output_path);
-% end
-% fprintf(fid, '%s', matlab_code);
-% fclose(fid);
-% fprintf('Created: %s\n', output_path);
-% 
-% fprintf('Created: %s\n', char(output_path));
+fprintf('Created: %s\n', char(output_path));
