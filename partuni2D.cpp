@@ -13,9 +13,7 @@ int main ()
 {
     auto start = std::chrono::high_resolution_clock::now();
     const int Nh = 4;
-    double hlist[Nh] = {0.12, 0.15, 0.18, 0.2};
-
-    
+    double hlist[Nh] = {0.12, 0.15, 0.18, 0.2};   
 
     for (int m = 0; m < Nh; m++)
     {
@@ -24,28 +22,41 @@ int main ()
 
         // parameters
         
-        /*const double h = 0.12;*/
         const double dx = 0.1;
         const double dy = 0.1;
-        /*const int N = (4*h/dx)+1;*/
         const int Ncol = 50;
         const int Nrow = 50;
 
         const double PI = 3.14159265358979323846;
+
+        const double rho = 1000.0;
+
         double alphagauss = 1.0 / (PI * h * h);
         double alphacubic = 10.0 / (7.0 * PI * h * h);
         double alphawedn = 7.0 / (4.0 * PI * h * h);
+
         double x[Ncol][Nrow];
         double y[Ncol][Nrow];
+
+        double u[Ncol][Nrow];
+        double v[Ncol][Nrow];
+
         double PGauss[Ncol][Nrow];
         double PCubic[Ncol][Nrow];
         double PWedn[Ncol][Nrow];
+
         double dPGaussX[Ncol][Nrow];
         double dPGaussY[Ncol][Nrow];
+
         double dPCubicX[Ncol][Nrow];
         double dPCubicY[Ncol][Nrow];
+
         double dPWednX[Ncol][Nrow];
         double dPWednY[Ncol][Nrow];
+
+        double drhodtGauss[Ncol][Nrow];
+        double drhodtCubic[Ncol][Nrow];
+        double drhodtWedn[Ncol][Nrow];
 
         double L2PGauss = 0.0;
         double L2PCubic = 0.0;
@@ -55,22 +66,22 @@ int main ()
         double L2normPCubic = 0.0;
         double L2normPWedn = 0.0;
         
-        string kernel;
-
-        
+        string kernel;       
         
         for (int i = 0; i < Ncol; i++)
         for (int j = 0; j < Nrow; j++)
         {
             x[i][j] =  i * dx;
             y[i][j] =  j * dy;
+            u[i][j] = 0.1*x[i][j];
+            v[i][j] = 0.0*y[i][j];
         }
 
         
         for (int i = 0; i < Ncol; i++)
         for (int j = 0; j < Nrow; j++)
         {
-            
+            //cummulative should be initialised with zero for each particle
             PGauss[i][j] = 0.0;
             PCubic[i][j] = 0.0;
             PWedn[i][j] = 0.0;
@@ -80,16 +91,25 @@ int main ()
             dPCubicY[i][j] = 0.0;
             dPWednX[i][j] = 0.0;
             dPWednY[i][j] = 0.0;
+            drhodtGauss[i][j] = 0.0;
+            drhodtCubic[i][j] = 0.0;
+            drhodtWedn[i][j] = 0.0;
 
             for (int k = 0 ; k < Ncol; k++)
             for (int l = 0 ; l < Nrow; l++)
             {
                 double q = sqrt(pow(x[i][j]-x[k][l],2)+pow(y[i][j]-y[k][l],2))/h;
                 double r = sqrt(pow(x[i][j]-x[k][l],2)+pow(y[i][j]-y[k][l],2));
+
                 double rx = x[i][j]-x[k][l];
                 double ry = y[i][j]-y[k][l];
+
                 double dirx = 0.0;
                 double diry = 0.0;
+
+                double du = u[i][j]-u[k][l];
+                double dv = v[i][j]-v[k][l];
+
                 if (abs(rx)>0.0)
                 {
                     dirx = rx/r;
@@ -104,10 +124,13 @@ int main ()
                 double WGauss = 0.0;
                 double WCubic = 0.0;
                 double WWedn = 0.0;
+                
                 double dWGaussX = 0.0;
                 double dWGaussY = 0.0;
+
                 double dWCubicX = 0.0;
                 double dWCubicY = 0.0;
+
                 double dWWednX = 0.0;
                 double dWWednY = 0.0;
 
@@ -153,12 +176,19 @@ int main ()
                 PGauss[i][j] += WGauss*dx*dy;
                 PCubic[i][j] += WCubic*dx*dy;
                 PWedn[i][j] += WWedn*dx*dy;
+
                 dPGaussX[i][j] += dWGaussX*dx*dy;
                 dPGaussY[i][j] += dWGaussY*dx*dy;
+
                 dPCubicX[i][j] += dWCubicX*dx*dy;
                 dPCubicY[i][j] += dWCubicY*dx*dy;
+
                 dPWednX[i][j] += dWWednX*dx*dy;
                 dPWednY[i][j] += dWWednY*dx*dy;
+
+                drhodtGauss[i][j] += (du*dWGaussX+dv*dWGaussY)*dx*dy*rho;
+                drhodtCubic[i][j] += (du*dWCubicX+dv*dWCubicY)*dx*dy*rho;
+                drhodtWedn[i][j] += (du*dWWednX+dv*dWWednY)*dx*dy*rho;
 
                 
         
@@ -178,12 +208,12 @@ int main ()
 
 
 
-        cout << "x"<< "\t" << "y" << "\t" << "PGauss" << "\t" << "PCubic" << "\t" << "PWedn" << "\t" << "dPGaussX" << "\t" << "dPGaussY" << "\t" << "dPCubicX" << "\t" << "dPCubicY" << "\t" << "dPWednX" << "\t" << "dPWednY" << "\t" << "L2normPGauss" << "\t" << "L2normPCubic" << "\t" << "L2normPWedn" << endl;
+        /*cout << "x"<< "\t" << "y" << "\t" << "PGauss" << "\t" << "PCubic" << "\t" << "PWedn" << "\t" << "dPGaussX" << "\t" << "dPGaussY" << "\t" << "dPCubicX" << "\t" << "dPCubicY" << "\t" << "dPWednX" << "\t" << "dPWednY" << "\t" << "L2normPGauss" << "\t" << "L2normPCubic" << "\t" << "L2normPWedn" << endl;
         for (int i = 0; i < Ncol; i++)
         for (int j = 0; j < Nrow; j++)
             {
                 cout <<  x[i][j] << "\t" << y[i][j] << "\t" << PGauss[i][j] << "\t" << PCubic[i][j] << "\t" << PWedn[i][j] << "\t" << dPGaussX[i][j] << "\t" << dPGaussY[i][j] << "\t" << dPCubicX[i][j] << "\t" << dPCubicY[i][j] << "\t" << dPWednX[i][j] << "\t" << dPWednY[i][j] << "\t" << L2normPGauss << "\t" << L2normPCubic << "\t" << L2normPWedn << endl;
-            }
+            }*/
 
 
         string filename = "partuni2D_dxh_" + to_string(dx/h) + ".csv";
@@ -194,11 +224,11 @@ int main ()
         file << "L2normPGauss" << "," << "L2normPCubic" << "," << "L2normPWedn" << endl;
         file << L2normPGauss << "," << L2normPCubic << "," << L2normPWedn << endl;
         file << endl;
-        file << "x"<< "," << "y" << ","<< "," << "PGauss" << "," << "PCubic" << "," << "PWedn" << "," << ","<< "dPGaussX" << "," << "dPGaussY" << "," << ","<< "dPCubicX" << "," << "dPCubicY" << ","<< "," << "dPWednX" << "," << "dPWednY" <<  endl;
+        file << "x"<< "," << "y" << ","<< "," << "PGauss" << "," << "PCubic" << "," << "PWedn" << "," << ","<< "dPGaussX" << "," << "dPGaussY" << "," << ","<< "dPCubicX" << "," << "dPCubicY" << ","<< "," << "dPWednX" << "," << "dPWednY" << "," << "," << "drhodtGauss" << "," << "drhodtCubic" << "," << "drhodtWedn" << endl;
         for (int i = 0; i < Ncol; i++)
         for (int j = 0; j < Nrow; j++)
             {
-                file << x[i][j] << "," << y[i][j] << "," << "," << PGauss[i][j] << "," << PCubic[i][j] << "," << PWedn[i][j] << "," << "," << dPGaussX[i][j] << "," << dPGaussY[i][j] << "," << "," << dPCubicX[i][j] << "," << dPCubicY[i][j] << "," <<"," << dPWednX[i][j] << "," << dPWednY[i][j] << endl;
+                file << x[i][j] << "," << y[i][j] << "," << "," << PGauss[i][j] << "," << PCubic[i][j] << "," << PWedn[i][j] << "," << "," << dPGaussX[i][j] << "," << dPGaussY[i][j] << "," << "," << dPCubicX[i][j] << "," << dPCubicY[i][j] << "," <<"," << dPWednX[i][j] << "," << dPWednY[i][j]<< "," << "," << drhodtGauss[i][j] << "," << drhodtCubic[i][j] << "," << drhodtWedn[i][j] << endl;
             }
         file << endl;
         file << endl;
