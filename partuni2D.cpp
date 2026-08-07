@@ -26,10 +26,14 @@ int main ()
         const double dy = 0.1;
         const int Ncol = 50;
         const int Nrow = 50;
+        const double VelcoefX = 0.1;
+        const double VelcoefY = 0.0;
 
         const double PI = 3.14159265358979323846;
 
         const double rho = 1000.0;
+
+        double drhodtexact = -rho*(VelcoefX+VelcoefY);
 
         double alphagauss = 1.0 / (PI * h * h);
         double alphacubic = 10.0 / (7.0 * PI * h * h);
@@ -62,9 +66,17 @@ int main ()
         double L2PCubic = 0.0;
         double L2PWedn = 0.0;
 
+        double L2drhodtGauss = 0.0;
+        double L2drhodtCubic = 0.0;
+        double L2drhodtWedn = 0.0;
+
         double L2normPGauss = 0.0;
         double L2normPCubic = 0.0;
         double L2normPWedn = 0.0;
+
+        double L2normdrhodtGauss = 0.0;
+        double L2normdrhodtCubic = 0.0;
+        double L2normdrhodtWedn = 0.0;
         
         string kernel;       
         
@@ -73,8 +85,8 @@ int main ()
         {
             x[i][j] =  i * dx;
             y[i][j] =  j * dy;
-            u[i][j] = 0.1*x[i][j];
-            v[i][j] = 0.0*y[i][j];
+            u[i][j] =  VelcoefX*x[i][j];
+            v[i][j] =  VelcoefY*y[i][j];
         }
 
         
@@ -196,17 +208,27 @@ int main ()
             double errorPGauss = (pow(PGauss[i][j]-1.0,2));
             double errorPCubic = (pow(PCubic[i][j]-1.0,2));
             double errorPWedn = (pow(PWedn[i][j]-1.0,2));
+
+            double errordrhodtGauss = (pow(drhodtGauss[i][j]-drhodtexact,2));
+            double errordrhodtCubic = (pow(drhodtCubic[i][j]-drhodtexact,2));
+            double errordrhodtWedn = (pow(drhodtWedn[i][j]-drhodtexact,2));
+
+
             L2PGauss += errorPGauss;
             L2PCubic += errorPCubic;
             L2PWedn += errorPWedn;    
-                
+            L2drhodtGauss += errordrhodtGauss;
+            L2drhodtCubic += errordrhodtCubic;
+            L2drhodtWedn += errordrhodtWedn;
             
         }
         L2normPGauss = sqrt(L2PGauss/(Ncol*Nrow));
         L2normPCubic = sqrt(L2PCubic/(Ncol*Nrow));
         L2normPWedn = sqrt(L2PWedn/(Ncol*Nrow));
 
-
+        L2normdrhodtGauss = sqrt(L2drhodtGauss/(Ncol*Nrow));
+        L2normdrhodtCubic = sqrt(L2drhodtCubic/(Ncol*Nrow));
+        L2normdrhodtWedn = sqrt(L2drhodtWedn/(Ncol*Nrow));
 
         /*cout << "x"<< "\t" << "y" << "\t" << "PGauss" << "\t" << "PCubic" << "\t" << "PWedn" << "\t" << "dPGaussX" << "\t" << "dPGaussY" << "\t" << "dPCubicX" << "\t" << "dPCubicY" << "\t" << "dPWednX" << "\t" << "dPWednY" << "\t" << "L2normPGauss" << "\t" << "L2normPCubic" << "\t" << "L2normPWedn" << endl;
         for (int i = 0; i < Ncol; i++)
@@ -221,8 +243,8 @@ int main ()
         ofstream file(filename);
         file << "dx/h :" << "," << dx/h << endl;
         file << "dy/h :" << "," << dy/h << endl;
-        file << "L2normPGauss" << "," << "L2normPCubic" << "," << "L2normPWedn" << endl;
-        file << L2normPGauss << "," << L2normPCubic << "," << L2normPWedn << endl;
+        file << "L2normPGauss" << "," << "L2normPCubic" << "," << "L2normPWedn" << "," << "L2normdrhodtGauss" << "," << "L2normdrhodtCubic" << "," << "L2normdrhodtWedn" << endl;
+        file << L2normPGauss << "," << L2normPCubic << "," << L2normPWedn << "," << L2normdrhodtGauss << "," << L2normdrhodtCubic << "," << L2normdrhodtWedn << endl;
         file << endl;
         file << "x"<< "," << "y" << ","<< "," << "PGauss" << "," << "PCubic" << "," << "PWedn" << "," << ","<< "dPGaussX" << "," << "dPGaussY" << "," << ","<< "dPCubicX" << "," << "dPCubicY" << ","<< "," << "dPWednX" << "," << "dPWednY" << "," << "," << "drhodtGauss" << "," << "drhodtCubic" << "," << "drhodtWedn" << endl;
         for (int i = 0; i < Ncol; i++)

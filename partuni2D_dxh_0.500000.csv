@@ -1,7 +1,7 @@
 dx/h :,0.5
 dy/h :,0.5
-L2normPGauss,L2normPCubic,L2normPWedn
-0.111422,0.0979412,0.0922839
+L2normPGauss,L2normPCubic,L2normPWedn,L2normdrhodtGauss,L2normdrhodtCubic,L2normdrhodtWedn
+0.111422,0.0979412,0.0922839,15.5759,14.1002,13.5494
 
 x,y,,PGauss,PCubic,PWedn,,dPGaussX,dPGaussY,,dPCubicX,dPCubicY,,dPWednX,dPWednY,,drhodtGauss,drhodtCubic,drhodtWedn
 0,0,,0.410942,0.448933,0.47116,,1.73101,1.73101,,2.13216,2.13216,,2.32905,2.32905,,-32.0524,-33.5037,-34.2278
