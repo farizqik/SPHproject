@@ -301,7 +301,7 @@ int main ()
             L2normdrhodt = sqrt(L2drhodt/(Ncol*Nrow));
 
 
-            string filename = "partition2D_dxh_" + to_string(dx/h) + "_t_" + to_string(t) + "_" + kernel + ".csv";
+            string filename = "Stillwater_dxh_" + to_string(dx/h) + "_t_" + to_string(t) + "_" + kernel + ".csv";
 
             ofstream file(filename);
             file << "dx/h :" << "," << dx/h << endl;
