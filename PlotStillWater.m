@@ -29,9 +29,9 @@ dx = 0.5;
 dy = 0.5;
 
 Ncol = 50;
-Nrow = 50;
+Nrow = 20;
 
-Nboundary = 3;
+Nboundary = 1;
 
 % Fluid domain:
 %
@@ -347,7 +347,7 @@ ylabel('y (m)');
 grid off;
 box off;
 
-colormap(redMap);
+colormap(turbo);
 
 c = colorbar;
 c.Label.String = colorLabel;

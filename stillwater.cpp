@@ -8,7 +8,7 @@
 
 using namespace std;
 
-const double dt = 0.001;
+const double dt = 0.001; 
 const double Totaltime= 1;
 const int Nt = Totaltime/dt;
 
@@ -16,14 +16,15 @@ const int Nt = Totaltime/dt;
 const double dx = 0.5;
 const double dy = 0.5;
 const int Ncol = 50;
-const int Nrow = 50;
+const int Nrow = 20;
 const double VelcoefX = 0.0;
 const double VelcoefY = 0.0;
 
 const double PI = 3.14159265358979323846;
 const double g = 9.81;
 const double rho0 = 1000.0;
-const double c0 = 10.0*sqrt(g*dy*(Nrow-1-3));
+const int boundpart = 1;
+const double c0 = 10.0*sqrt(g*dy*(Nrow-1-boundpart));
 const double mass = rho0*dx*dy;
 
 const double gamma = 7.0;
@@ -162,13 +163,15 @@ int main ()
         double dudt[Ncol][Nrow];
         double dvdt[Ncol][Nrow];
 
-        double L2drhodt = 0.0;
+        
 
         double L2normdrhodt = 0.0;
 
 
         for (int n=0;n<Nt;n++)
         {
+            double L2drhodt = 0.0;
+
             double t = n*dt;
             cout << "t : " << t << endl;
             
@@ -177,12 +180,13 @@ int main ()
             {
                 if (t==0.0)
                 {
-                    x[i][j] = (i-3)*dx;
-                    y[i][j] = (j-3)*dy;
+                    x[i][j] = (i-boundpart)*dx;
+                    y[i][j] = (j-boundpart)*dy;
                     u[i][j] = 0.0;
                     v[i][j] = 0.0;
-                    rho [i][j] = rho0*pow(1.0+((rho0*g*(dy*(Nrow-1-3)-y[i][j]))/B), 1.0/gamma);
-                                      
+                    //rho [i][j] = rho0*pow(1.0+((rho0*g*(dy*(Nrow-1-boundpart)-y[i][j]))/B), 1.0/gamma);
+                    rho [i][j]=rho0;
+                                     
                 }
                 else
                 {
@@ -191,11 +195,12 @@ int main ()
                     u[i][j] = unew[i][j];
                     v[i][j] = vnew[i][j];
                     rho [i][j] = rhonew[i][j];
+                    
                                        
                 }
-
-                drhodtexact [i][j] = -rho[i][j]*(VelcoefX+VelcoefY);
                 pressure[i][j] = B*(pow(rho[i][j]/rho0,gamma)-1.0);
+                drhodtexact [i][j] = -rho[i][j]*(VelcoefX+VelcoefY);
+                
                 
             }
 
@@ -209,7 +214,7 @@ int main ()
                 dudt[i][j] = 0.0;
                 dvdt[i][j] = 0.0;
 
-                bool boundary = ( i<=2 || i >= Ncol -3 || j<=2 );
+                bool boundary = ( i<=boundpart-1 || i >= Ncol -boundpart || j<=boundpart-1 );
                 
 
                 for (int k = 0 ; k < Ncol; k++)
@@ -260,15 +265,17 @@ int main ()
                         return 1; // Exit the program with an error code
                     }
 
+                    
 
                     
+                    drhodt[i][j] += (du*result.dWeightX+dv*result.dWeightY)*mass;
 
                     if (!boundary)
 
                     {
                         dudt[i][j] += -mass*((pressure[i][j]/(rho[i][j]*rho[i][j]))+(pressure[k][l]/(rho[k][l]*rho[k][l])))*result.dWeightX;
                         dvdt[i][j] += -mass*((pressure[i][j]/(rho[i][j]*rho[i][j]))+(pressure[k][l]/(rho[k][l]*rho[k][l])))*result.dWeightY;
-                        drhodt[i][j] += (du*result.dWeightX+dv*result.dWeightY)*mass;
+                        
                         
                     }
                 }
@@ -306,8 +313,8 @@ int main ()
             ofstream file(filename);
             file << "dx/h :" << "," << dx/h << endl;
             file << "dy/h :" << "," << dy/h << endl;
-            file << "L2normdrhodt" << endl;
-            file << L2normdrhodt << endl;
+            file << "L2normdrhodt" << "," << "dx" << "," << "dy" << "," << "Ncol" << "," << "Nrow" << endl;
+            file << L2normdrhodt << "," << dx << "," << dy << "," << Ncol << "," << Nrow << endl;
             file << endl;
             file << "t" << "," << t << endl;
             file << "x"<< "," << "y" << ","<< ","<<"rho"<< "," << "drhodt" << "," << "pressure"<< "," << "," << "u" << "," << "v" << "," << "," << "dudt" << "," << "dvdt" << endl;
