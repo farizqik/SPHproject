@@ -4,13 +4,15 @@
 #include <iomanip>
 #include <fstream>
 #include <chrono>
+#include <filesystem>
+#include <sstream>
 
 
 using namespace std;
 
 const double dt = 0.001; 
-const double Totaltime= 1;
-const int Nt = Totaltime/dt;
+const double Totaltime= 1.0;
+const int Nt = Totaltime / dt;
 
 
 const double dx = 0.5;
@@ -23,7 +25,7 @@ const double VelcoefY = 0.0;
 const double PI = 3.14159265358979323846;
 const double g = 9.81;
 const double rho0 = 1000.0;
-const int boundpart = 1;
+const int boundpart = 1; 
 const double c0 = 10.0*sqrt(g*dy*(Nrow-1-boundpart));
 const double mass = rho0*dx*dy;
 
@@ -129,14 +131,18 @@ int main ()
 
 
     const int Nh = 1;
-    double hlist[Nh] = {1}; 
+    double hlist[Nh] = {2*dx}; 
 
     for (int m = 0; m < Nh; m++)
     {
         double h = hlist[m];
         cout << "h : " << h << endl;
+        string foldername = 
+            "Stillwater_dx_" + to_string(dx) + "_h_" + to_string(h) + "_Ncol_" + to_string(Ncol) + "_Nrow_" + to_string(Nrow)+ "_" + kernel; 
+        system(("mkdir -p " + foldername).c_str());
+        
 
-        // parameters        
+        // parameters         
 
         double x[Ncol][Nrow];
         double y[Ncol][Nrow];
@@ -168,12 +174,12 @@ int main ()
         double L2normdrhodt = 0.0;
 
 
-        for (int n=0;n<Nt;n++)
+        for (int n=0;n<Nt+1;n++)
         {
             double L2drhodt = 0.0;
 
             double t = n*dt;
-            cout << "t : " << t << endl;
+            
             
             for (int i = 0; i < Ncol; i++)
             for (int j = 0; j < Nrow; j++)
@@ -199,8 +205,7 @@ int main ()
                                        
                 }
                 pressure[i][j] = B*(pow(rho[i][j]/rho0,gamma)-1.0);
-                drhodtexact [i][j] = -rho[i][j]*(VelcoefX+VelcoefY);
-                
+                drhodtexact [i][j] = -rho[i][j]*(VelcoefX+VelcoefY);                
                 
             }
 
@@ -259,6 +264,7 @@ int main ()
                     {
                         result = Wendland(q, h, dirx, diry);
                     }
+
                     else
                     {
                         cout << "Invalid kernel choice. Please choose 'gaussian', 'cubic', or 'wendland'." << endl;
@@ -308,25 +314,27 @@ int main ()
             L2normdrhodt = sqrt(L2drhodt/(Ncol*Nrow));
 
 
-            string filename = "Stillwater_dxh_" + to_string(dx/h) + "_t_" + to_string(t) + "_" + kernel + ".csv";
+            if (n % 100 == 0)
+            {
+                cout << "t : " << t << endl;
+                string filename = foldername + "/Stillwater_dxh_" + to_string(dx/h) + "_t_" + to_string(t) + ".csv";
 
-            ofstream file(filename);
-            file << "dx/h :" << "," << dx/h << endl;
-            file << "dy/h :" << "," << dy/h << endl;
-            file << "L2normdrhodt" << "," << "dx" << "," << "dy" << "," << "Ncol" << "," << "Nrow" << endl;
-            file << L2normdrhodt << "," << dx << "," << dy << "," << Ncol << "," << Nrow << endl;
-            file << endl;
-            file << "t" << "," << t << endl;
-            file << "x"<< "," << "y" << ","<< ","<<"rho"<< "," << "drhodt" << "," << "pressure"<< "," << "," << "u" << "," << "v" << "," << "," << "dudt" << "," << "dvdt" << endl;
-            for (int i = 0; i < Ncol; i++)
-            for (int j = 0; j < Nrow; j++)
-                {
-                    file << x[i][j] << "," << y[i][j] << "," << "," << rho[i][j] << "," << drhodt[i][j] << "," << pressure[i][j] << "," << "," << u[i][j] << "," << v[i][j] << "," << "," << dudt[i][j] << "," << dvdt[i][j] << endl;
-                }
-
-            file.close();
-
+                ofstream file(filename);
+                file << "dx/h :" << "," << dx/h << endl;
+                file << "dy/h :" << "," << dy/h << endl;
+                file << "L2normdrhodt" << "," << "dx" << "," << "dy" << "," << "Ncol" << "," << "Nrow" << endl;
+                file << L2normdrhodt << "," << dx << "," << dy << "," << Ncol << "," << Nrow << endl;
+                file << endl;
+                file << "t" << "," << t << endl;
+                file << "x"<< "," << "y" << ","<< ","<<"rho"<< "," << "drhodt" << "," << "pressure"<< "," << "," << "u" << "," << "v" << "," << "," << "dudt" << "," << "dvdt" << endl;
+                for (int i = 0; i < Ncol; i++)
+                for (int j = 0; j < Nrow; j++)
+                    {
+                        file << x[i][j] << "," << y[i][j] << "," << "," << rho[i][j] << "," << drhodt[i][j] << "," << pressure[i][j] << "," << "," << u[i][j] << "," << v[i][j] << "," << "," << dudt[i][j] << "," << dvdt[i][j] << endl;
+                    }
             
+                file.close();
+            }          
 
         }
 
