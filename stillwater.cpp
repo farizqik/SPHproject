@@ -10,7 +10,7 @@
 
 using namespace std;
 
-const double dt = 0.001; 
+const double dt = 0.0001; 
 const double Totaltime= 1.0;
 const int Nt = Totaltime / dt;
 
@@ -18,14 +18,14 @@ const int Nt = Totaltime / dt;
 const double dx = 0.5;
 const double dy = 0.5;
 const int Ncol = 50;
-const int Nrow = 20;
+const int Nrow = 50;
 const double VelcoefX = 0.0;
 const double VelcoefY = 0.0;
 
 const double PI = 3.14159265358979323846;
 const double g = 9.81;
 const double rho0 = 1000.0;
-const int boundpart = 1; 
+const int boundpart = 3; 
 const double c0 = 10.0*sqrt(g*dy*(Nrow-1-boundpart));
 const double mass = rho0*dx*dy;
 
@@ -139,8 +139,8 @@ int main ()
         cout << "h : " << h << endl;
         string foldername = 
             "Stillwater_dx_" + to_string(dx) + "_h_" + to_string(h) + "_Ncol_" + to_string(Ncol) + "_Nrow_" + to_string(Nrow)+ "_" + kernel; 
-        system(("mkdir -p " + foldername).c_str());
-        
+        //system(("mkdir -p " + foldername).c_str());
+        std::filesystem::create_directories(foldername);
 
         // parameters         
 
@@ -314,7 +314,7 @@ int main ()
             L2normdrhodt = sqrt(L2drhodt/(Ncol*Nrow));
 
 
-            if (n % 100 == 0)
+            if (n % int(0.01/dt) == 0)
             {
                 cout << "t : " << t << endl;
                 string filename = foldername + "/Stillwater_dxh_" + to_string(dx/h) + "_t_" + to_string(t) + ".csv";
