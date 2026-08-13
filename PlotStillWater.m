@@ -7,7 +7,7 @@ close all;
 % ==========================================================
 
 simulationFolder = ...
-    "Stillwater_dx_0.500000_h_1.000000_Ncol_50_Nrow_20_wendland";
+    "Stillwater_dx_0.500000_h_1.000000_Ncol_50_Nrow_50_wendland";
 
 folderName = string(simulationFolder);
 

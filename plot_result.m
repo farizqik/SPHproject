@@ -40,6 +40,10 @@ dxhValues = zeros(nFiles,1);
 L2Gauss = zeros(nFiles,1);
 L2Cubic = zeros(nFiles,1);
 L2Wedn = zeros(nFiles,1);
+L2normdrhodtGauss = zeros(nFiles,1);
+L2normdrhodtCubic = zeros(nFiles,1);
+L2normdrhodtWedn  = zeros(nFiles,1);
+
 
 fprintf('Found %d CSV files.\n',nFiles);
 
@@ -51,17 +55,25 @@ for n = 1:nFiles
     %% Read metadata
     % Read whole file then validate that A1:C4 exists
     allCells = readcell(filename,'Delimiter',',');
-    if size(allCells,1) < 4 || size(allCells,2) < 3
-        error('File %s does not contain the expected metadata in range A1:C4.', filename);
-    end
-    metadata = allCells(1:4,1:3);
+% Read metadata (expect at least 6 columns now)
+if size(allCells,2) < 6
+    error('File %s does not contain expected metadata columns A1:F4.', filename);
+end
+metadata = allCells(1:4,1:6);
 
-    dxh = metadata{1,2};
-    dxhValues(n) = dxh;
+dxh = metadata{1,2};
+dxhValues(n) = dxh;
 
-    L2Gauss(n) = metadata{4,1};
-    L2Cubic(n) = metadata{4,2};
-    L2Wedn(n) = metadata{4,3};
+% Partition-of-unity L2 norms (A4:C4)
+L2Gauss(n) = metadata{4,1};
+L2Cubic(n) = metadata{4,2};
+L2Wedn(n) = metadata{4,3};
+
+% Continuity (d rho/dt) L2 norms stored in D4:F4
+L2normdrhodtGauss(n) = metadata{4,4};
+L2normdrhodtCubic(n) = metadata{4,5};
+L2normdrhodtWedn(n)  = metadata{4,6};
+
 
     %% Read numerical data
     % Row 6 contains the variable names, so data begin at row 7.
@@ -337,7 +349,7 @@ grid on;
 box on;
 xlabel('dx/h');
 ylabel('L_2 norm');
-title('Partition-of-unity L_2 error versus dx/h');
+title('Partition of unity L2 error versus dx/h');
 legend('Gaussian','Cubic spline','Wendland C2', ...
     'Location','best');
 
@@ -346,6 +358,41 @@ if saveFigures
         fullfile(outputFolder,'L2norm_vs_dxh.png'), ...
         'Resolution',300);
 end
+
+
+%% =========================================================
+% FIGURE 4: L2 norm of drho/dt versus dx/h
+% ==========================================================
+
+[dxhValues,order] = sort(dxhValues);
+
+L2normdrhodtGauss = L2normdrhodtGauss(order);
+L2normdrhodtCubic = L2normdrhodtCubic(order);
+L2normdrhodtWedn  = L2normdrhodtWedn(order);
+
+figL2rho = figure( ...
+    'Name','L2 norm (d\rho/dt) versus dx/h', ...
+    'Position',[200 150 900 600]);
+
+plot(dxhValues,L2normdrhodtGauss,'-o','LineWidth',1.5,'MarkerSize',7);
+hold on;
+plot(dxhValues,L2normdrhodtCubic,'-s','LineWidth',1.5,'MarkerSize',7);
+plot(dxhValues,L2normdrhodtWedn,'-^','LineWidth',1.5,'MarkerSize',7);
+hold off;
+
+grid on;
+box on;
+xlabel('dx/h');
+ylabel('L_2 norm of (d\rho/dt)');
+title('Continuity L2 error versus dx/h');
+legend('Gaussian','Cubic spline','Wendland C2','Location','best');
+
+if saveFigures
+    exportgraphics(figL2rho, ...
+        fullfile(outputFolder,'L2norm_drhodt_vs_dxh.png'), ...
+        'Resolution',300);
+end
+
 
 %% Save and display the summary values
 summaryTable = table( ...
