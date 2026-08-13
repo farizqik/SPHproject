@@ -7,7 +7,7 @@ close all;
 % ==========================================================
 
 simulationFolder = ...
-    "Stillwater_dx_0.500000_h_1.000000_Ncol_50_Nrow_50_wendland";
+    "Stillwater_dx_0.500000_h_1.000000_Ncol_50_Nrow_20_wendland";
 
 folderName = string(simulationFolder);
 
@@ -191,10 +191,14 @@ vInitial = data(:,9);
 %  IDENTIFY BOUNDARY AND FLUID PARTICLES
 % ==========================================================
 
+tol = 1e-4 * dx  ;
+
 boundary = ...
-    x0 < fluidXmin | ...
-    x0 > fluidXmax | ...
-    y0 < fluidYmin;
+    x0 < fluidXmin - tol | ...
+    x0 > fluidXmax + tol | ...
+    y0 < fluidYmin - tol;
+
+
 
 fluid = ~boundary;
 
@@ -334,6 +338,73 @@ if plotVariable == "pressure"
     fprintf( ...
         "Initial maximum fluid pressure = %.4f Pa\n", ...
         max(pressureInitial(fluid)));
+
+end
+
+%% =========================================================
+%  IDEAL HYDROSTATIC PRESSURE FIGURE
+% ==========================================================
+
+if plotVariable == "pressure"
+
+    % Fluid height
+    H = fluidYmax;
+
+    % Ideal hydrostatic pressure at each initial fluid particle
+    pressureHydrostatic = ...
+        rho0_ref * g * (H - y0(fluid));
+
+    % Do not allow negative pressure above free surface
+    pressureHydrostatic = ...
+        max(pressureHydrostatic, 0.0);
+
+    % Create ideal hydrostatic pressure figure
+    figHydro = figure( ...
+        'Color', 'w', ...
+        'Position', [1050 100 900 700]);
+
+    scatter( ...
+        x0(fluid), ...
+        y0(fluid), ...
+        25, ...
+        pressureHydrostatic, ...
+        'filled', ...
+        'MarkerEdgeColor', 'none');
+
+    hold on;
+
+    scatter( ...
+        x0(boundary), ...
+        y0(boundary), ...
+        90, ...
+        [0 0 0], ...
+        'filled');
+
+    axis equal;
+
+    xlim([xmin xmax]);
+    ylim([ymin ymax]);
+
+    xlabel('x (m)');
+    ylabel('y (m)');
+
+    grid off;
+    box off;
+
+    colormap(turbo);
+
+    cHydro = colorbar;
+    cHydro.Label.String = ...
+        'Ideal hydrostatic pressure (Pa)';
+
+    clim([fieldMin fieldMax]);
+
+    title( ...
+        'Ideal Hydrostatic Pressure');
+
+    set(gca, ...
+        'FontSize', 12, ...
+        'LineWidth', 1);
 
 end
 
@@ -586,5 +657,7 @@ if saveVideo
     fprintf( ...
         "Video saved as %s\n", ...
         videoName);
+
+
 
 end

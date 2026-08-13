@@ -9,8 +9,49 @@ close all;
 simulationFolder = ...
     "Stillwater_dx_0.500000_h_1.000000_Ncol_50_Nrow_20_wendland";
 
-kernel = "wendland";
-dxh = 0.5;
+folderName = string(simulationFolder);
+
+tokens = regexp( ...
+    folderName, ...
+    'Stillwater_dx_([0-9.]+)_h_([0-9.]+)_Ncol_([0-9]+)_Nrow_([0-9]+)_([A-Za-z]+)$', ...
+    'tokens', ...
+    'once');
+
+if isempty(tokens)
+
+    error( ...
+        "Folder name does not match expected format:\n%s", ...
+        simulationFolder);
+
+end
+
+
+%% =========================================================
+% SIMULATION PARAMETERS FROM FOLDER
+% ==========================================================
+
+dx = str2double(tokens{1});
+
+h = str2double(tokens{2});
+
+Ncol = str2double(tokens{3});
+
+Nrow = str2double(tokens{4});
+
+kernel = string(tokens{5});
+
+
+%% Assuming square initial particle spacing
+
+dy = dx;
+
+
+%% Calculate dx/h automatically
+
+dxh = dx/h;
+dyh = dy/h;
+
+%% Choose what to plot
 
 % Available:
 % "pressure"
@@ -18,36 +59,19 @@ dxh = 0.5;
 % "velocity"
 
 plotVariable = "pressure";
+% plotVariable = "density";
+% plotVariable = "velocity";
 
 % Save animation?
 saveVideo = true;
 
-videoName = "Stillwater_dx_0.500000_h_1.000000_Ncol_50_Nrow_20_wendland.mp4";
+videoName = string(simulationFolder)+ ".mp4" ;
 
 %% =========================================================
 %  DOMAIN SETTINGS
 % ==========================================================
 
-dx = 0.5;
-dy = 0.5;
-
-Ncol = 50;
-Nrow = 20;
-
-Nboundary = 1;
-
-% Fluid domain:
-%
-% C++ coordinates:
-%
-% x = (i - Nboundary)*dx
-% y = (j - Nboundary)*dy
-%
-% Left, right and bottom:
-% 3 boundary layers
-%
-% Top:
-% free surface
+Nboundary = 3;
 
 fluidXmin = 0.0;
 
@@ -158,12 +182,7 @@ y0 = data(:,2);
 
 rhoInitial = data(:,4);
 pressureInitial = data(:,6);
-fprintf("Pressure all particles:\n");
-fprintf("min = %.6f Pa\n", min(pressureInitial));
-fprintf("max = %.6f Pa\n", max(pressureInitial));
 
-fprintf("Number of unique pressure values = %d\n", ...
-    length(unique(pressureInitial)));
 
 uInitial = data(:,8);
 vInitial = data(:,9);
@@ -172,10 +191,14 @@ vInitial = data(:,9);
 %  IDENTIFY BOUNDARY AND FLUID PARTICLES
 % ==========================================================
 
+tol = 1e-3 * dx;
+
 boundary = ...
-    x0 < fluidXmin | ...
-    x0 > fluidXmax | ...
-    y0 < fluidYmin;
+    x0 < fluidXmin - tol | ...
+    x0 > fluidXmax + tol | ...
+    y0 < fluidYmin - tol;
+
+
 
 fluid = ~boundary;
 
@@ -185,7 +208,6 @@ fprintf("Number of fluid particles    = %d\n", ...
 
 fprintf("Number of boundary particles = %d\n", ...
     sum(boundary));
-
 
 %% =========================================================
 %  AXIS LIMITS
@@ -248,8 +270,47 @@ if isempty(initialFluidField)
     error("Initial field contains no finite values.");
 end
 
-fieldMin = min(initialFluidField);
-fieldMax = max(initialFluidField);
+% fieldMin = min(initialFluidField);
+% fieldMax = max(initialFluidField);
+
+rho0_ref = 1000.0;
+g = 9.81;
+
+H = fluidYmax;
+
+switch plotVariable
+
+    case "pressure"
+
+        fieldMin = 0.0;
+        fieldMax = rho0_ref * g * H;
+
+    case "density"
+
+        initialFluidField = field0(fluid);
+        initialFluidField = initialFluidField(isfinite(initialFluidField));
+
+        fieldMin = min(initialFluidField);
+        fieldMax = max(initialFluidField);
+
+        if fieldMin == fieldMax
+            fieldMin = fieldMin - 1;
+            fieldMax = fieldMax + 1;
+        end
+
+    case "velocity"
+
+        fieldMin = 0.0;
+
+        % choose a useful fixed upper limit
+        fieldMax = sqrt(g * H);
+
+end
+
+fprintf("\nColour range\n");
+fprintf("----------------------\n");
+fprintf("minimum = %.4f\n", fieldMin);
+fprintf("maximum = %.4f\n", fieldMax);
 
 %% Avoid zero colour range
 
@@ -382,7 +443,7 @@ if saveVideo
         videoName, ...
         'MPEG-4');
 
-    video.FrameRate = 30;
+    video.FrameRate = 5;
 
     open(video);
 
@@ -499,6 +560,7 @@ for n = 1:length(files)
         time(n)));
 
     drawnow;
+    pause(0.2)
 
     %% -----------------------------------------------------
     % Save video frame
@@ -528,5 +590,7 @@ if saveVideo
     fprintf( ...
         "Video saved as %s\n", ...
         videoName);
+
+
 
 end

@@ -10,7 +10,11 @@
 
 using namespace std;
 
-const double dt = 0.0001; 
+// --------------------------------------------
+// Constants
+// --------------------------------------------
+
+const double dt = 0.001; 
 const double Totaltime= 1.0;
 const int Nt = Totaltime / dt;
 
@@ -18,14 +22,14 @@ const int Nt = Totaltime / dt;
 const double dx = 0.5;
 const double dy = 0.5;
 const int Ncol = 50;
-const int Nrow = 50;
+const int Nrow = 20;
 const double VelcoefX = 0.0;
 const double VelcoefY = 0.0;
 
 const double PI = 3.14159265358979323846;
 const double g = 9.81;
 const double rho0 = 1000.0;
-const int boundpart = 3; 
+const int boundpart = 0; 
 const double c0 = 10.0*sqrt(g*dy*(Nrow-1-boundpart));
 const double mass = rho0*dx*dy;
 
@@ -34,7 +38,9 @@ const double B = c0*c0*rho0/gamma;
 
 
 
-
+// -----------------------------------------------------------------------------------------------------------------------------
+// Kernel functions
+// -----------------------------------------------------------------------------------------------------------------------------
 
 struct KernelResult {
     double Weight;
@@ -43,9 +49,9 @@ struct KernelResult {
 };
 
 
-// --------------------------------------------
+// -----------------------------------------------------------------------------------------------------------------------------
 // Gaussian kernel
-// --------------------------------------------
+// -----------------------------------------------------------------------------------------------------------------------------
 KernelResult gaussian(double q, double h, double dirx, double diry)
 {
     KernelResult result;
@@ -59,9 +65,9 @@ KernelResult gaussian(double q, double h, double dirx, double diry)
 }
 
 
-// --------------------------------------------
+// -----------------------------------------------------------------------------------------------------------------------------
 // Cubic kernel
-// --------------------------------------------
+// -----------------------------------------------------------------------------------------------------------------------------
 KernelResult cubicSpline(double q, double h, double dirx, double diry)
 {
     double alpha = 10.0 / (7.0 * PI * h * h);
@@ -88,11 +94,9 @@ KernelResult cubicSpline(double q, double h, double dirx, double diry)
     return result;
 }
 
-
-
-// --------------------------------------------
+// -----------------------------------------------------------------------------------------------------------------------------
 // Wendland kernel
-// --------------------------------------------
+// -----------------------------------------------------------------------------------------------------------------------------
 KernelResult Wendland(double q, double h, double dirx, double diry)
 {
     double alpha = 7.0 / (4.0 * PI * h * h);
@@ -116,10 +120,11 @@ KernelResult Wendland(double q, double h, double dirx, double diry)
 
 
 
-
-// --------------------------------------------
+// -----------------------------------------------------------------------------------------------------------------------------
+// -----------------------------------------------------------------------------------------------------------------------------
 // Main Program
-// --------------------------------------------
+// -----------------------------------------------------------------------------------------------------------------------------
+// -----------------------------------------------------------------------------------------------------------------------------
 
 int main ()
 {
@@ -139,8 +144,8 @@ int main ()
         cout << "h : " << h << endl;
         string foldername = 
             "Stillwater_dx_" + to_string(dx) + "_h_" + to_string(h) + "_Ncol_" + to_string(Ncol) + "_Nrow_" + to_string(Nrow)+ "_" + kernel; 
-        //system(("mkdir -p " + foldername).c_str());
-        std::filesystem::create_directories(foldername);
+        system(("mkdir -p " + foldername).c_str());
+        //std::filesystem::create_directories(foldername);
 
         // parameters         
 
@@ -169,10 +174,28 @@ int main ()
         double dudt[Ncol][Nrow];
         double dvdt[Ncol][Nrow];
 
-        
-
         double L2normdrhodt = 0.0;
 
+
+// -----------------------------------------------------------------------------------------------------------------------------
+// Initial condition
+// -----------------------------------------------------------------------------------------------------------------------------
+        for (int i = 0; i < Ncol; i++)
+            for (int j = 0; j < Nrow; j++)
+            {
+                x[i][j] = (i-boundpart)*dx;
+                y[i][j] = (j-boundpart)*dy;
+                u[i][j] = 0.0;
+                v[i][j] = 0.0;
+                //rho [i][j] = rho0*pow(1.0+((rho0*g*(dy*(Nrow-1-boundpart)-y[i][j]))/B), 1.0/gamma);
+                rho [i][j]=rho0;
+            }
+
+
+        
+// -----------------------------------------------------------------------------------------------------------------------------
+// start time loop
+// -----------------------------------------------------------------------------------------------------------------------------
 
         for (int n=0;n<Nt+1;n++)
         {
@@ -180,36 +203,21 @@ int main ()
 
             double t = n*dt;
             
+// -----------------------------------------------------------------------------------------------------------------------------
+// Compute Pressure
+// -----------------------------------------------------------------------------------------------------------------------------        
             
             for (int i = 0; i < Ncol; i++)
             for (int j = 0; j < Nrow; j++)
             {
-                if (t==0.0)
-                {
-                    x[i][j] = (i-boundpart)*dx;
-                    y[i][j] = (j-boundpart)*dy;
-                    u[i][j] = 0.0;
-                    v[i][j] = 0.0;
-                    //rho [i][j] = rho0*pow(1.0+((rho0*g*(dy*(Nrow-1-boundpart)-y[i][j]))/B), 1.0/gamma);
-                    rho [i][j]=rho0;
-                                     
-                }
-                else
-                {
-                    x[i][j] = xnew[i][j];
-                    y[i][j] = ynew[i][j];
-                    u[i][j] = unew[i][j];
-                    v[i][j] = vnew[i][j];
-                    rho [i][j] = rhonew[i][j];
-                    
-                                       
-                }
                 pressure[i][j] = B*(pow(rho[i][j]/rho0,gamma)-1.0);
-                drhodtexact [i][j] = -rho[i][j]*(VelcoefX+VelcoefY);                
-                
+                drhodtexact [i][j] = -rho[i][j]*(VelcoefX+VelcoefY);                               
             }
 
-            
+// -----------------------------------------------------------------------------------------------------------------------------
+// Compute Continuity and Momentum
+// -----------------------------------------------------------------------------------------------------------------------------
+
             for (int i = 0; i < Ncol; i++)
             for (int j = 0; j < Nrow; j++)
             {
@@ -264,31 +272,30 @@ int main ()
                     {
                         result = Wendland(q, h, dirx, diry);
                     }
-
                     else
                     {
                         cout << "Invalid kernel choice. Please choose 'gaussian', 'cubic', or 'wendland'." << endl;
                         return 1; // Exit the program with an error code
                     }
 
-                    
-
-                    
+                                       
                     drhodt[i][j] += (du*result.dWeightX+dv*result.dWeightY)*mass;
 
                     if (!boundary)
 
                     {
                         dudt[i][j] += -mass*((pressure[i][j]/(rho[i][j]*rho[i][j]))+(pressure[k][l]/(rho[k][l]*rho[k][l])))*result.dWeightX;
-                        dvdt[i][j] += -mass*((pressure[i][j]/(rho[i][j]*rho[i][j]))+(pressure[k][l]/(rho[k][l]*rho[k][l])))*result.dWeightY;
-                        
-                        
+                        dvdt[i][j] += -mass*((pressure[i][j]/(rho[i][j]*rho[i][j]))+(pressure[k][l]/(rho[k][l]*rho[k][l])))*result.dWeightY;                       
                     }
                 }
+// -----------------------------------------------------------------------------------------------------------------------------
+// Compute Time integration
+// -----------------------------------------------------------------------------------------------------------------------------
+
+                rhonew[i][j] = rho[i][j]+drhodt[i][j]*dt;
 
                 if (boundary)
                 {
-                    rhonew[i][j] = rho[i][j]+drhodt[i][j]*dt;
                     unew[i][j] = 0.0;
                     vnew[i][j] = 0.0;
                     xnew[i][j] = x[i][j];
@@ -296,24 +303,29 @@ int main ()
                 }
                 else
                 {
-
-                rhonew[i][j] = rho[i][j]+drhodt[i][j]*dt;
-                unew[i][j] = u[i][j]+dudt[i][j]*dt;
-                vnew[i][j] = v[i][j]+(dvdt[i][j]-g)*dt;
-                xnew[i][j] = x[i][j]+unew[i][j]*dt;
-                ynew[i][j] = y[i][j]+vnew[i][j]*dt;
-
+                    unew[i][j] = u[i][j]+dudt[i][j]*dt;
+                    vnew[i][j] = v[i][j]+(dvdt[i][j]-g)*dt;
+                    xnew[i][j] = x[i][j]+unew[i][j]*dt;
+                    ynew[i][j] = y[i][j]+vnew[i][j]*dt;
                 }
 
-                double errordrhodt = (pow(drhodt[i][j]-drhodtexact[i][j],2));
+                x[i][j] = xnew[i][j];
+                y[i][j] = ynew[i][j];
+                u[i][j] = unew[i][j];
+                v[i][j] = vnew[i][j];
+                rho[i][j] = rhonew [i][j];
 
+
+                double errordrhodt = (pow(drhodt[i][j]-drhodtexact[i][j],2));
                 L2drhodt += errordrhodt;
                 
             }
 
             L2normdrhodt = sqrt(L2drhodt/(Ncol*Nrow));
 
-
+// -----------------------------------------------------------------------------------------------------------------------------
+// Write output
+// -----------------------------------------------------------------------------------------------------------------------------
             if (n % int(0.01/dt) == 0)
             {
                 cout << "t : " << t << endl;
