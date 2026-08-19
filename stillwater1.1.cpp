@@ -17,7 +17,7 @@ string type;
 // Timestep
 // --------------------------------------------
 
-const double dt = 0.001; 
+const double dt = 0.0001; 
 const double Totaltime= 1.0;
 const int Nt = Totaltime / dt;
 
@@ -29,7 +29,7 @@ const int Nt = Totaltime / dt;
 const double tanklength = 25.0;
 const double tankheight = 10.0;
 
-const double waterlength = 25.0;
+const double waterlength = 15.0;
 const double freeboard = 2.0;
 const double waterheight = tankheight-freeboard;
 
@@ -67,6 +67,9 @@ vector<double> drhodt;
 
 vector<double> dudt;
 vector<double> dvdt;
+
+
+
 
 
 
@@ -163,7 +166,10 @@ KernelResult Wendland(double q, double h, double dirx, double diry)
 
     return result;
 }
-        
+
+
+
+
 
 
 
@@ -311,7 +317,11 @@ int main ()
 
 
 
+
+
         double L2normdrhodt = 0.0;
+
+
 
 
 // -----------------------------------------------------------------------------------------------------------------------------

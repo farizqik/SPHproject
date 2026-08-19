@@ -7,7 +7,7 @@ close all;
 % ==========================================================
 
 simulationFolder = ...
-    "Stillwater_dp_0.500000_h_1.000000_Nparticles_1088_wendland";
+    "Stillwater_dp_0.500000_h_1.000000_Nparticles_768_wendland";
 
 plotVariable = "pressure";
 % plotVariable = "density";
@@ -50,7 +50,7 @@ hdp = h/dp;
 tanklength = 25.0;
 tankheight = 10.0;
 
-waterlength = 25.0;
+waterlength = 15.0;
 
 freeboard = 2.0;
 waterheight = tankheight - freeboard;
