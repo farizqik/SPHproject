@@ -29,7 +29,7 @@ const int Nt = Totaltime / dt;
 const double tanklength = 25.0;
 const double tankheight = 10.0;
 
-const double waterlength = 15.0;
+const double waterlength = 25.0;
 const double freeboard = 2.0;
 const double waterheight = tankheight-freeboard;
 
@@ -78,7 +78,7 @@ const double PI = 3.14159265358979323846;
 const double g = 9.81;
 const double rho0 = 1000.0;
 const int boundpart = 0; 
-const double c0 = 10.0*sqrt(g*dp*(waterheight));
+const double c0 = 10.0*sqrt(g*(waterheight));
 const double mass = rho0*dp*dp;
 
 const double gamma = 7.0;

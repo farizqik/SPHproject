@@ -17,7 +17,7 @@ string type;
 // Timestep
 // --------------------------------------------
 
-const double dt = 0.001; 
+const double dt = 0.0001; 
 const double Totaltime= 1.0;
 const int Nt = Totaltime / dt;
 
@@ -83,11 +83,13 @@ const double PI = 3.14159265358979323846;
 const double g = 9.81;
 const double rho0 = 1000.0;
 const int boundpart = 0; 
-const double c0 = 10.0*sqrt(g*dp*(waterheight));
+const double c0 = 10.0*sqrt(g*(waterheight));
 const double mass = rho0*dp*dp;
 
 const double gamma = 7.0;
 const double B = c0*c0*rho0/gamma;
+
+const double alphaAV = 0.01;
 
 
 
@@ -505,98 +507,17 @@ int main ()
             double L2drhodt = 0.0;
 
             double t = n*dt;
+
             
 // -----------------------------------------------------------------------------------------------------------------------------
-// Compute Pressure
-// -----------------------------------------------------------------------------------------------------------------------------        
-            
-            for (int i = 0; i < Nparticles; i++)
-            {
-                pressure[i] = B*(pow(rho[i]/rho0,gamma)-1.0);
-                drhodtexact [i] = -rho[i]*(0.0);                               
-            }
-
+// mDBC Interpolation
 // -----------------------------------------------------------------------------------------------------------------------------
-// Compute Continuity and Momentum
-// -----------------------------------------------------------------------------------------------------------------------------
-
-// For Fluid =================================
-            for (int i = Nboundary; i < Nparticles; i++)
-            {
-                //cummulative should be initialised with zero for each particle
-
-                drhodt[i] = 0.0;
-                dudt[i] = 0.0;
-                dvdt[i] = 0.0;
-                
-
-                for (int j = 0; j < Nparticles; j++)
-                {
-
-                    double rx = x[i]-x[j];
-                    double ry = y[i]-y[j];
-
-                    double r = sqrt(rx*rx+ry*ry);
-                    double q = r/h;
-
-                    double dirx = 0.0;
-                    double diry = 0.0;
-
-                    double du = u[i]-u[j];
-                    double dv = v[i]-v[j];
-
-
-
-
-                    if (abs(rx)>0.0)
-                    {
-                        dirx = rx/r;
-                    }
-                    
-                    if (abs(ry)>0.0)
-                    {
-                        diry = ry/r;
-                    }
-
-
-                    
-                    KernelResult result;
-
-                    if (kernel == "gaussian")
-                    {
-                        result = gaussian(q, h, dirx, diry);
-                    }
-                    else if (kernel == "cubic")
-                    {
-                        result = cubicSpline(q, h, dirx, diry);
-                    }
-                    else if (kernel == "wendland")
-                    {
-                        result = Wendland(q, h, dirx, diry);
-                    }
-                    else
-                    {
-                        cout << "Invalid kernel choice. Please choose 'gaussian', 'cubic', or 'wendland'." << endl;
-                        return 1; // Exit the program with an error code
-                    }
-
-                    drhodt[i] += (du*result.dWeightX+dv*result.dWeightY)*mass;
-                    dudt[i] += -mass*((pressure[i]/(rho[i]*rho[i]))+(pressure[j]/(rho[j]*rho[j])))*result.dWeightX;
-                    dvdt[i] += -mass*((pressure[i]/(rho[i]*rho[i]))+(pressure[j]/(rho[j]*rho[j])))*result.dWeightY;                                             
-                }
-
-                                  
-                
-
-            }
-
-// For Boundary =================================
 
             for (int i = 0; i < Nboundary; i++)
             {
                 //cummulative should be initialised with zero for each particle
 
-                //drhodt[i] = 0.0;
+                drhodt[i] = 0.0;
                 dudt[i] = 0.0;
                 dvdt[i] = 0.0;
 
@@ -622,21 +543,16 @@ int main ()
                     double dirx = 0.0;
                     double diry = 0.0;
 
-                    double du = u[i]-u[j];
-                    double dv = v[i]-v[j];
+                    //double du = u[i]-u[j];
+                    //double dv = v[i]-v[j];
 
 
-
-
-                    if (abs(rx)>0.0)
+                    if (r>0.0)
                     {
                         dirx = rx/r;
-                    }
-                    
-                    if (abs(ry)>0.0)
-                    {
                         diry = ry/r;
                     }
+
 
 
                     
@@ -660,32 +576,14 @@ int main ()
                         return 1; // Exit the program with an error code
                     }
 
-                    
-                    //Test matrix solver
-                    /*double dA[n][n] = 
+                    if (abs(result.Weight) < 1e-14)
                     {
-                        { 2.0,  3.0, -1.0},
-                        { 4.0, -1.0,  2.0},
-                        {-2.0,  5.0,  3.0}
-                    };
-                    
-                    double db[n] = 
-                    {
-                        5.0,
-                        6.0,
-                        7.0
-                    };
+                        continue;
+                    }
 
-                    for (int row = 0; row < 3; row++)
-                    {
-                        for (int col = 0; col < 3; col++)
-                        {
-                            A[row][col]=dA[row][col];
-                            
-                        }
-                        b[row]=db[row];
-                    }*/
-                                       
+                    Nneighbor++;
+
+                                      
                     
                     double Vj = mass/rho[j];
                     double dA[n][n] = 
@@ -714,12 +612,49 @@ int main ()
                         b[row]+=db[row];
                     }
 
-                    //drhodt[i] += (du*result.dWeightX+dv*result.dWeightY)*mass;                    
-                    //dudt[i] = 0;
-                    //dvdt[i] = 0;
+
                 }
 
                 
+                if (Nneighbor >= 3)
+                {
+                    solveLinear(A, b, X, n);
+
+
+                    // Check that solver did not create NaN / Inf
+                    if (isfinite(X[0]) &&
+                        isfinite(X[1]) &&
+                        isfinite(X[2]))
+                    {
+                        rhoghost[i] = X[0];
+                        drhoghostX[i] = X[1];
+                        drhoghostY[i] = X[2];
+                    }
+
+                    else
+                    {
+                        // Failed matrix solution:
+                        // retain previous density
+
+                        rhoghost[i] = rho[i];
+
+                        drhoghostX[i] = 0.0;
+                        drhoghostY[i] = 0.0;
+                    }
+                }
+
+                else
+                {
+                    // Not enough fluid neighbours around ghost point
+
+                    rhoghost[i] = rho[i];
+
+                    drhoghostX[i] = 0.0;
+                    drhoghostY[i] = 0.0;
+                }
+
+
+
                 /*cout << "\nBoundary particle i = " << i << endl;
 
                 cout << "A =" << endl;
@@ -744,23 +679,114 @@ int main ()
                 cout << endl;*/
 
 
-                solveLinear (A, b, X, n);
-
                 /*for (int p =0; p < n; p++)
                 {
                     cout << "X[" << p << "] = " << X[p] << endl;
                 }*/
 
-                rhoghost[i]=X[0];
-                drhoghostX[i]=X[1];
-                drhoghostY[i]=X[2];
-
                 /*cout << "rhoghost = " << rhoghost[i] << endl;
                 cout << "drhoghostX = " << drhoghostX[i] << endl;
                 cout << "drhoghostY =" << drhoghostY[i] << endl;*/
 
-                 
+            rho[i] = rhoghost[i]+drhoghostX[i]*(x[i]-xghost[i])+drhoghostY[i]*(y[i]-yghost[i]);    
             }
+            
+
+// -----------------------------------------------------------------------------------------------------------------------------
+// Compute Pressure
+// -----------------------------------------------------------------------------------------------------------------------------        
+            
+            for (int i = 0; i < Nparticles; i++)
+            {
+                pressure[i] = B*(pow(rho[i]/rho0,gamma)-1.0);
+                drhodtexact [i] = -rho[i]*(0.0);                               
+            }
+
+// -----------------------------------------------------------------------------------------------------------------------------
+// Fluid Continuity and Momentum
+// -----------------------------------------------------------------------------------------------------------------------------
+
+            for (int i = Nboundary; i < Nparticles; i++)
+            {
+                //cummulative should be initialised with zero for each particle
+
+                drhodt[i] = 0.0;
+                dudt[i] = 0.0;
+                dvdt[i] = 0.0;
+                
+
+                for (int j = 0; j < Nparticles; j++)
+                {
+
+                    double rx = x[i]-x[j];
+                    double ry = y[i]-y[j];
+
+                    double r = sqrt(rx*rx+ry*ry);
+                    double q = r/h;
+
+                    double dirx = 0.0;
+                    double diry = 0.0;
+
+                    double du = u[i]-u[j];
+                    double dv = v[i]-v[j];
+
+                    double vijrij = du*rx+dv*ry;
+
+                    double Piij = 0.0;
+
+
+
+
+                    if (r>0.0)
+                    {
+                        dirx = rx/r;
+                        diry = ry/r;
+                    }
+
+                    //artificial viscosity
+                    if (vijrij<0.0)
+                    {
+                        double muij = h*vijrij/(r*r+0.01*h*h);
+                        double rhoij = 0.5*(rho[i]+rho[j]);
+                        Piij = -alphaAV*c0*muij/rhoij;
+                    }
+
+
+                    
+                    KernelResult result;
+
+                    if (kernel == "gaussian")
+                    {
+                        result = gaussian(q, h, dirx, diry);
+                    }
+                    else if (kernel == "cubic")
+                    {
+                        result = cubicSpline(q, h, dirx, diry);
+                    }
+                    else if (kernel == "wendland")
+                    {
+                        result = Wendland(q, h, dirx, diry);
+                    }
+                    else
+                    {
+                        cout << "Invalid kernel choice. Please choose 'gaussian', 'cubic', or 'wendland'." << endl;
+                        return 1; // Exit the program with an error code
+                    }
+
+                    drhodt[i] += (du*result.dWeightX+dv*result.dWeightY)*mass;
+                    //dudt[i] += -mass*((pressure[i]/(rho[i]*rho[i]))+(pressure[j]/(rho[j]*rho[j]))+Piij)*result.dWeightX;
+                    //dvdt[i] += -mass*((pressure[i]/(rho[i]*rho[i]))+(pressure[j]/(rho[j]*rho[j]))+Piij)*result.dWeightY;
+                    
+                    dudt[i] += -mass*((pressure[i]/(rho[i]*rho[j]))+(pressure[j]/(rho[i]*rho[j]))+Piij)*result.dWeightX;
+                    dvdt[i] += -mass*((pressure[i]/(rho[i]*rho[j]))+(pressure[j]/(rho[i]*rho[j]))+Piij)*result.dWeightY;
+                }
+
+                                  
+                
+
+            }
+
+
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Time integration
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -768,7 +794,7 @@ int main ()
 // For Boundary
             for (int i = 0; i < Nboundary; i++)
             {
-                rhonew[i] = rhoghost[i]+drhoghostX[i]*(x[i]-xghost[i])+drhoghostY[i]*(y[i]-yghost[i]);
+                rhonew[i] = rho[i]+drhodt[i]*dt;
                 unew[i] = 0.0;
                 vnew[i] = 0.0;
                 xnew[i] = x[i];
@@ -785,24 +811,7 @@ int main ()
                 ynew[i] = y[i]+vnew[i]*dt;
             }
 
-// next loop for all particles 
-            for (int i = 0; i < Nparticles; i++)
-            {
-                x[i] = xnew[i];
-                y[i] = ynew[i];
-                u[i] = unew[i];
-                v[i] = vnew[i];
-                rho[i] = rhonew [i];
 
-
-                double errordrhodt = (pow(drhodt[i]-drhodtexact[i],2));
-                L2drhodt += errordrhodt;
-            }
-               
-                
-            
-
-            L2normdrhodt = sqrt(L2drhodt/(Nparticles));
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Write output
@@ -835,7 +844,26 @@ int main ()
                     
             
                 file.close();
-            }          
+            }
+            
+// -----------------------------------------------------------------------------------------------------------------------------
+// next loop for all particles
+// -----------------------------------------------------------------------------------------------------------------------------
+             
+            for (int i = 0; i < Nparticles; i++)
+            {
+                x[i] = xnew[i];
+                y[i] = ynew[i];
+                u[i] = unew[i];
+                v[i] = vnew[i];
+                rho[i] = rhonew[i];
+
+
+                double errordrhodt = (pow(drhodt[i]-drhodtexact[i],2));
+                L2drhodt += errordrhodt;
+            }
+               
+            L2normdrhodt = sqrt(L2drhodt/(Nparticles));
 
         }
 
