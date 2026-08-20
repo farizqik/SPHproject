@@ -71,6 +71,8 @@ vector<double> dvdt;
 vector<double> xghost;
 vector<double> yghost;
 vector<double> rhoghost;
+vector<double> drhoghostX;
+vector<double> drhoghostY;
 
 
 
@@ -323,7 +325,7 @@ int main ()
     for (int m = 0; m < Nh; m++)
     {
         double h = hlist[m];
-        cout << "h : " << h << endl;
+        cout << "h/dp : " << h/dp << endl;
         string foldername = 
             "Stillwater_dp_" + to_string(dp) + "_h_" + to_string(h) + "_Nparticles_" + to_string(Nparticles) + "_" + kernel; 
         //system(("mkdir -p " + foldername).c_str());
@@ -356,6 +358,9 @@ int main ()
         xghost.resize(Nboundary);
         yghost.resize(Nboundary);
         rhoghost.resize(Nboundary);
+        drhoghostX.resize(Nboundary);
+        drhoghostY.resize(Nboundary);
+        
 
 
 
@@ -508,14 +513,14 @@ int main ()
             for (int i = 0; i < Nparticles; i++)
             {
                 pressure[i] = B*(pow(rho[i]/rho0,gamma)-1.0);
-                //drhodtexact [i] = -rho[i]*(VelcoefX+VelcoefY);                               
+                drhodtexact [i] = -rho[i]*(0.0);                               
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Continuity and Momentum
 // -----------------------------------------------------------------------------------------------------------------------------
 
-// For Fluid
+// For Fluid =================================
             for (int i = Nboundary; i < Nparticles; i++)
             {
                 //cummulative should be initialised with zero for each particle
@@ -585,23 +590,27 @@ int main ()
 
             }
 
-// For Boundary
+// For Boundary =================================
 
             for (int i = 0; i < Nboundary; i++)
             {
                 //cummulative should be initialised with zero for each particle
 
-                drhodt[i] = 0.0;
+                //drhodt[i] = 0.0;
                 dudt[i] = 0.0;
                 dvdt[i] = 0.0;
+
                 const int n = 3;
+
                 double A[n][n]={0};
                 double b[n]={0};
                 double X[n];
 
+                int Nneighbor = 0;
+
                                 
 
-                for (int j = 0; j < Nparticles; j++)
+                for (int j = Nboundary; j < Nparticles; j++)
                 {
 
                     double rx = xghost[i]-x[j];
@@ -652,18 +661,45 @@ int main ()
                     }
 
                     
-                    double dA[n][n] = 
+                    //Test matrix solver
+                    /*double dA[n][n] = 
                     {
-                        {result.Weight*dp*dp, result.Weight*dp*dp*(-rx), result.Weight*dp*dp*(-ry)},
-                        {result.dWeightX*dp*dp, result.dWeightX*dp*dp*(-rx), result.dWeightX*dp*dp*(-ry)},
-                        {result.dWeightY*dp*dp, result.dWeightY*dp*dp*(-rx), result.dWeightY*dp*dp*(-ry)}
+                        { 2.0,  3.0, -1.0},
+                        { 4.0, -1.0,  2.0},
+                        {-2.0,  5.0,  3.0}
                     };
                     
                     double db[n] = 
                     {
-                        {result.Weight*mass},
-                        {result.dWeightX*mass},
-                        {result.dWeightY*mass}
+                        5.0,
+                        6.0,
+                        7.0
+                    };
+
+                    for (int row = 0; row < 3; row++)
+                    {
+                        for (int col = 0; col < 3; col++)
+                        {
+                            A[row][col]=dA[row][col];
+                            
+                        }
+                        b[row]=db[row];
+                    }*/
+                                       
+                    
+                    double Vj = mass/rho[j];
+                    double dA[n][n] = 
+                    {
+                        {result.Weight*Vj, result.Weight*Vj*(-rx), result.Weight*Vj*(-ry)},
+                        {result.dWeightX*Vj, result.dWeightX*Vj*(-rx), result.dWeightX*Vj*(-ry)},
+                        {result.dWeightY*Vj, result.dWeightY*Vj*(-rx), result.dWeightY*Vj*(-ry)}
+                    };
+                    
+                    double db[n] = 
+                    {
+                        result.Weight*mass,
+                        result.dWeightX*mass,
+                        result.dWeightY*mass
                     };
 
                     
@@ -678,9 +714,9 @@ int main ()
                         b[row]+=db[row];
                     }
 
-                    drhodt[i] += (du*result.dWeightX+dv*result.dWeightY)*mass;                    
-                    dudt[i] = 0;
-                    dvdt[i] = 0;
+                    //drhodt[i] += (du*result.dWeightX+dv*result.dWeightY)*mass;                    
+                    //dudt[i] = 0;
+                    //dvdt[i] = 0;
                 }
 
                 
@@ -710,18 +746,18 @@ int main ()
 
                 solveLinear (A, b, X, n);
 
-                for (int p =0; p < n; p++)
+                /*for (int p =0; p < n; p++)
                 {
                     cout << "X[" << p << "] = " << X[p] << endl;
-                }
-                    
-                    
+                }*/
 
+                rhoghost[i]=X[0];
+                drhoghostX[i]=X[1];
+                drhoghostY[i]=X[2];
 
-                      
-                    
-                
-
+                /*cout << "rhoghost = " << rhoghost[i] << endl;
+                cout << "drhoghostX = " << drhoghostX[i] << endl;
+                cout << "drhoghostY =" << drhoghostY[i] << endl;*/
 
                  
             }
@@ -732,7 +768,7 @@ int main ()
 // For Boundary
             for (int i = 0; i < Nboundary; i++)
             {
-                rhonew[i] = rho[i]+drhodt[i]*dt;
+                rhonew[i] = rhoghost[i]+drhoghostX[i]*(x[i]-xghost[i])+drhoghostY[i]*(y[i]-yghost[i]);
                 unew[i] = 0.0;
                 vnew[i] = 0.0;
                 xnew[i] = x[i];
