@@ -178,13 +178,19 @@ KernelResult Wendland(double q, double h, double dirx, double diry)
 // --------------------------------------------------
 // Function to solve linear equations A*x = b
 // --------------------------------------------------
-void solveLinear(double A[][3], double b[], double X[], int n)
+bool solveLinear(double A[][3], double b[], double X[], int n)
 {
+    const double tolerance = 1e-12;
     // Forward elimination
     for (int k = 0; k < n - 1; k++)
     {
+        if (abs(A[k][k]) < tolerance)
+        {
+            return false;
+        }
         for (int i = k + 1; i < n; i++)
         {
+            
             double factor = A[i][k] / A[k][k];
 
             for (int j = k; j < n; j++)
@@ -199,6 +205,11 @@ void solveLinear(double A[][3], double b[], double X[], int n)
     // Back substitution
     for (int i = n - 1; i >= 0; i--)
     {
+        if (abs(A[i][i]) < tolerance)
+        {
+            return false;
+        }
+
         double sum = b[i];
 
         for (int j = i + 1; j < n; j++)
@@ -207,10 +218,105 @@ void solveLinear(double A[][3], double b[], double X[], int n)
         }
 
         X[i] = sum / A[i][i];
+
+        if (!isfinite(X[i]))
+        {
+            return false;
+        }
     }
+    return true;
 }
 
 
+
+// --------------------------------------------------
+// Robust 3x3 linear solver with partial pivoting.
+// Returns false when A is singular / nearly singular.
+// --------------------------------------------------
+bool solveLinear2(double A[][3], double b[], double X[], int n)
+{
+    double maxA = 0.0;
+    for (int row = 0; row < n; row++)
+    {
+        for (int col = 0; col < n; col++)
+        {
+            maxA = max(maxA, abs(A[row][col]));
+        }
+    }
+
+    if (maxA == 0.0)
+    {
+        return false;
+    }
+
+    const double pivotTolerance = 1e-10 * maxA;
+
+    for (int k = 0; k < n; k++)
+    {
+        // Find the largest pivot in this column.
+        int pivotRow = k;
+        double pivotValue = abs(A[k][k]);
+
+        for (int row = k + 1; row < n; row++)
+        {
+            if (abs(A[row][k]) > pivotValue)
+            {
+                pivotValue = abs(A[row][k]);
+                pivotRow = row;
+            }
+        }
+
+        if (pivotValue < pivotTolerance)
+        {
+            return false;
+        }
+
+        if (pivotRow != k)
+        {
+            for (int col = k; col < n; col++)
+            {
+                swap(A[k][col], A[pivotRow][col]);
+            }
+            swap(b[k], b[pivotRow]);
+        }
+
+        // Elimination below the pivot.
+        for (int row = k + 1; row < n; row++)
+        {
+            double factor = A[row][k] / A[k][k];
+
+            for (int col = k; col < n; col++)
+            {
+                A[row][col] -= factor * A[k][col];
+            }
+            b[row] -= factor * b[k];
+        }
+    }
+
+    // Back substitution.
+    for (int row = n - 1; row >= 0; row--)
+    {
+        if (abs(A[row][row]) < pivotTolerance)
+        {
+            return false;
+        }
+
+        double sum = b[row];
+        for (int col = row + 1; col < n; col++)
+        {
+            sum -= A[row][col] * X[col];
+        }
+
+        X[row] = sum / A[row][row];
+
+        if (!isfinite(X[row]))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
 
 
 
@@ -473,7 +579,12 @@ int main ()
             u[i] = 0.0;
             v[i] = 0.0;
 
-            rho[i] = rho0;
+            //rho[i] = rho0;
+
+            // Exact hydrostatic initial density for the Tait EOS used here.
+            // It satisfies dp/dy = -rho*g in the continuum.
+            double depth = max(0.0, waterheight - y[i]);
+            rho[i] = rho0 * pow(1.0 + (gamma - 1.0)*g*depth/(c0*c0), 1.0/(gamma - 1.0));
             
             i++;
 
@@ -521,6 +632,18 @@ int main ()
                 dudt[i] = 0.0;
                 dvdt[i] = 0.0;
 
+                // In this still-water case, ghost nodes above the known free surface
+                // are outside the liquid. Keep those wall particles at zero gauge pressure.
+                /*if (yghost[i] > waterheight)
+                {
+                    rhoghost[i] = rho0;
+                    drhoghostX[i] = 0.0;
+                    drhoghostY[i] = 0.0;
+                    rho[i] = rho0;
+                    continue;
+                }*/
+
+
                 const int n = 3;
 
                 double A[n][n]={0};
@@ -528,6 +651,11 @@ int main ()
                 double X[n];
 
                 int Nneighbor = 0;
+
+                // Shepard-filter fallback used when the mDBC correction matrix
+                // does not have sufficient / reliable fluid support.
+                double shepardNumerator = 0.0;
+                double shepardDenominator = 0.0;
 
                                 
 
@@ -586,6 +714,11 @@ int main ()
                                       
                     
                     double Vj = mass/rho[j];
+
+                    shepardNumerator += rho[j] * result.Weight * Vj;
+                    shepardDenominator += result.Weight * Vj;
+
+
                     double dA[n][n] = 
                     {
                         {result.Weight*Vj, result.Weight*Vj*(-rx), result.Weight*Vj*(-ry)},
@@ -615,8 +748,47 @@ int main ()
 
                 }
 
+                // The mDBC formulation becomes unreliable with very low ghost support.
+                // Use at least four fluid neighbours and reject singular/nearly-singular solves.
+                const int minMdbcNeighbors = 4;
+
+
+                bool solved = false;
+
+
+                if (Nneighbor >= minMdbcNeighbors)
+                {
+                    solved = solveLinear2(A, b, X, n);
+                }
+
+                if (solved)
+                {
+                    rhoghost[i] = X[0];
+                    drhoghostX[i] = X[1];
+                    drhoghostY[i] = X[2];
+                }
+                else
+                {
+                    // mDBC / DualSPHysics-style fallback: Shepard-filtered ghost density.
+                    // With no reliable gradient reconstruction, do not extrapolate a noisy gradient.
+                    if (shepardDenominator > 1e-12)
+                    {
+                        rhoghost[i] = shepardNumerator / shepardDenominator;
+                    }
+                    else
+                    {
+                        // This boundary particle has effectively no fluid support
+                        // (for example, a side-wall particle above the free surface).
+                        rhoghost[i] = rho0;
+                    }
+
+                    drhoghostX[i] = 0.0;
+                    drhoghostY[i] = 0.0;
+                }
+
+
                 
-                if (Nneighbor >= 3)
+                /*if (Nneighbor >= 3)
                 {
                     solveLinear(A, b, X, n);
 
@@ -651,7 +823,7 @@ int main ()
 
                     drhoghostX[i] = 0.0;
                     drhoghostY[i] = 0.0;
-                }
+                }*/
 
 
 
@@ -777,8 +949,8 @@ int main ()
                     //dudt[i] += -mass*((pressure[i]/(rho[i]*rho[i]))+(pressure[j]/(rho[j]*rho[j]))+Piij)*result.dWeightX;
                     //dvdt[i] += -mass*((pressure[i]/(rho[i]*rho[i]))+(pressure[j]/(rho[j]*rho[j]))+Piij)*result.dWeightY;
                     
-                    dudt[i] += -mass*((pressure[i]/(rho[i]*rho[j]))+(pressure[j]/(rho[i]*rho[j]))+Piij)*result.dWeightX;
-                    dvdt[i] += -mass*((pressure[i]/(rho[i]*rho[j]))+(pressure[j]/(rho[i]*rho[j]))+Piij)*result.dWeightY;
+                    dudt[i] += -mass*(((pressure[i]+pressure[j])/(rho[i]*rho[j]))+Piij)*result.dWeightX;
+                    dvdt[i] += -mass*(((pressure[i]+pressure[j])/(rho[i]*rho[j]))+Piij)*result.dWeightY;
                 }
 
                                   
