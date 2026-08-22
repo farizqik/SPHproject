@@ -7,7 +7,7 @@ close all;
 % ==========================================================
 
 simulationFolder = ...
-    "Stillwater_dp_0.500000_h_1.000000_Nparticles_1088_wendland";
+    "Stillwater_dp_0.500000_h_1.000000_Nparticles_768_wendland";
 
 plotVariable = "pressure";
 % plotVariable = "density";
@@ -509,6 +509,65 @@ if plotVariable == "pressure"
         'Ideal Hydrostatic Pressure');
 
 end
+
+%% =========================================================
+% KINETIC ENERGY VS TIME
+% ==========================================================
+
+KE = zeros(length(files),1);
+
+for n = 1:length(files)
+
+    filename = fullfile( ...
+        files(n).folder, ...
+        files(n).name);
+
+    % C++ CSV:
+    % line 2 = L2norm Pressure, KE, dp, Nparticles
+    % line 3 = numerical values
+    %
+    % Read line 3, columns A:D
+    metadata = readmatrix( ...
+        filename, ...
+        'Range','A3:D3');
+
+    % Column 2 contains kinetic energy
+    KE(n) = metadata(2);
+
+end
+
+
+%% =========================================================
+% PLOT KINETIC ENERGY VS TIME
+% ==========================================================
+
+figure( ...
+    'Color','w', ...
+    'Position',[200 200 800 600]);
+
+plot( ...
+    time, ...
+    KE, ...
+    'LineWidth',1.5);
+
+xlabel('Time (s)');
+ylabel('Kinetic Energy (J)');
+
+title('Kinetic Energy vs Time');
+
+grid on;
+box on;
+
+set(gca, ...
+    'FontSize',12, ...
+    'LineWidth',1);
+
+fprintf("\nKINETIC ENERGY\n");
+fprintf("--------------------------------------\n");
+fprintf("Initial KE = %.6e J\n", KE(1));
+fprintf("Maximum KE = %.6e J\n", max(KE));
+fprintf("Final KE   = %.6e J\n", KE(end));
+
 
 
 %% =========================================================

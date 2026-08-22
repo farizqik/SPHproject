@@ -29,7 +29,7 @@ const int Nt = Totaltime / dt;
 const double tanklength = 25.0;
 const double tankheight = 10.0;
 
-const double waterlength = 25.0;
+const double waterlength = 15.0;
 const double freeboard = 2.0;
 const double waterheight = tankheight-freeboard;
 
@@ -59,6 +59,8 @@ vector<double> rho;
 vector<double> rhonew;
 
 vector<double> drhodtexact;
+vector<double> pressureexact;
+
 
 vector<double> pressure;
 vector<double> pressurenew;
@@ -456,6 +458,7 @@ int main ()
 
         pressure.resize(Nparticles);
         pressurenew.resize(Nparticles);
+        pressureexact.resize(Nparticles);
 
         drhodt.resize(Nparticles);
         drhodtexact.resize(Nparticles);
@@ -468,15 +471,8 @@ int main ()
         rhoghost.resize(Nboundary);
         drhoghostX.resize(Nboundary);
         drhoghostY.resize(Nboundary);
+
         
-
-
-
-
-        double L2normdrhodt = 0.0;
-
-
-
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Initial condition
@@ -579,30 +575,17 @@ int main ()
             u[i] = 0.0;
             v[i] = 0.0;
 
-            //rho[i] = rho0;
+            rho[i] = rho0;
 
             // Exact hydrostatic initial density for the Tait EOS used here.
             // It satisfies dp/dy = -rho*g in the continuum.
-            double depth = max(0.0, waterheight - y[i]);
-            rho[i] = rho0 * pow(1.0 + (gamma - 1.0)*g*depth/(c0*c0), 1.0/(gamma - 1.0));
+            //double depth = max(0.0, waterheight - y[i]);
+            //rho[i] = rho0 * pow(1.0 + (gamma - 1.0)*g*depth/(c0*c0), 1.0/(gamma - 1.0));
             
             i++;
 
         }
     }
-
-    
-    /*for (int i = 0; i < Nboundary; i++)
-    {
-        cout << "ID: " << i
-             << "  Type: Boundary"
-             << "  x: " << x[i]
-             << "  y: " << y[i]
-             << "  xghost: " << xghost[i]
-             << "  yghost: " << yghost[i]
-             << endl;
-    }
-    */
      
 
 
@@ -615,7 +598,6 @@ int main ()
 
         for (int n=0;n<Nt+1;n++)
         {
-            double L2drhodt = 0.0;
 
             double t = n*dt;
 
@@ -787,79 +769,6 @@ int main ()
                 }
 
 
-                
-                /*if (Nneighbor >= 3)
-                {
-                    solveLinear(A, b, X, n);
-
-
-                    // Check that solver did not create NaN / Inf
-                    if (isfinite(X[0]) &&
-                        isfinite(X[1]) &&
-                        isfinite(X[2]))
-                    {
-                        rhoghost[i] = X[0];
-                        drhoghostX[i] = X[1];
-                        drhoghostY[i] = X[2];
-                    }
-
-                    else
-                    {
-                        // Failed matrix solution:
-                        // retain previous density
-
-                        rhoghost[i] = rho[i];
-
-                        drhoghostX[i] = 0.0;
-                        drhoghostY[i] = 0.0;
-                    }
-                }
-
-                else
-                {
-                    // Not enough fluid neighbours around ghost point
-
-                    rhoghost[i] = rho[i];
-
-                    drhoghostX[i] = 0.0;
-                    drhoghostY[i] = 0.0;
-                }*/
-
-
-
-                /*cout << "\nBoundary particle i = " << i << endl;
-
-                cout << "A =" << endl;
-
-                for (int row = 0; row < 3; row++)
-                {
-                    for (int col = 0; col < 3; col++)
-                    {
-                        cout << A[row][col] << "\t";
-                    }
-
-                    cout << endl;
-                }
-
-                cout << "b = ";
-
-                for (int row = 0; row < 3; row++)
-                {
-                    cout << b[row] << "\t";
-                }
-
-                cout << endl;*/
-
-
-                /*for (int p =0; p < n; p++)
-                {
-                    cout << "X[" << p << "] = " << X[p] << endl;
-                }*/
-
-                /*cout << "rhoghost = " << rhoghost[i] << endl;
-                cout << "drhoghostX = " << drhoghostX[i] << endl;
-                cout << "drhoghostY =" << drhoghostY[i] << endl;*/
-
             rho[i] = rhoghost[i]+drhoghostX[i]*(x[i]-xghost[i])+drhoghostY[i]*(y[i]-yghost[i]);    
             }
             
@@ -871,7 +780,8 @@ int main ()
             for (int i = 0; i < Nparticles; i++)
             {
                 pressure[i] = B*(pow(rho[i]/rho0,gamma)-1.0);
-                drhodtexact [i] = -rho[i]*(0.0);                               
+                drhodtexact[i] = -rho[i]*(0.0);
+                pressureexact[i] = rho0*g*(waterheight-y[i]);                                
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -958,6 +868,15 @@ int main ()
 
             }
 
+// -----------------------------------------------------------------------------------------------------------------------------
+// Compute Kinetic Energy
+// -----------------------------------------------------------------------------------------------------------------------------
+            double KE = 0.0;
+            for (int i = 0; i < Nparticles; i++)
+            {
+                KE += 0.5 * mass* ((u[i]*u[i])+(v[i]*v[i]));
+            }
+
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Time integration
@@ -986,8 +905,29 @@ int main ()
 
 
 // -----------------------------------------------------------------------------------------------------------------------------
-// Write output
+// Compute error
 // -----------------------------------------------------------------------------------------------------------------------------
+            double L2drhodt = 0.0;
+            double L2pressure = 0.0;
+            //double L2normdrhodt = 0.0;
+            //double L2normpressure = 0.0;
+            
+
+            for (int i = Nboundary; i < Nparticles; i++)
+            {
+                double errordrhodt = (drhodt[i]-drhodtexact[i])*(drhodt[i]-drhodtexact[i]);
+                double errorpressure = (pressure[i]-pressureexact[i])*(pressure[i]-pressureexact[i]);
+                
+                L2drhodt += errordrhodt;
+                L2pressure += errorpressure;
+            }
+ 
+            double L2normdrhodt = sqrt(L2drhodt/(Nfluid));
+            double L2normpressure = sqrt(L2pressure/Nfluid);
+
+// -----------------------------------------------------------------------------------------------------------------------------
+// Write output
+// -----------------------------------------------------------------------------------------------------------------------------            
             if (n % int(0.01/dt) == 0)
             {
                 cout << "t : " << t << endl;
@@ -995,8 +935,8 @@ int main ()
 
                 ofstream file(filename);
                 file << "h/dp :" << "," << h/dp << endl;
-                file << "L2normdrhodt" << "," << "dp" << ","  << "Nparticles" << endl;
-                file << L2normdrhodt << "," << dp << "," << Nparticles <<endl;
+                file << "L2norm Pressure" << "," << "KE" << "," << "dp" << ","  << "Nparticles" << endl;
+                file << L2normpressure << "," << KE << "," << dp << "," << Nfluid <<endl;
                 file << endl;
                 file << "t" << "," << t << endl;
                 file << "ID"<< ","<< "x"<< "," << "y" << ","<< ","<<"rho"<< "," << "drhodt" << "," << "pressure"<< "," << "," << "u" << "," << "v" << "," << "," << "dudt" << "," << "dvdt" <<"," << "type" << endl;
@@ -1012,16 +952,14 @@ int main ()
                         }
                         file << i << "," << x[i] << "," << y[i] << "," << "," << rho[i] << "," << drhodt[i] << "," << pressure[i] << "," << "," << u[i] << "," << v[i] << "," << "," << dudt[i] << "," << dvdt[i] << "," << type << endl;
                     }
-
-                    
-            
+           
                 file.close();
             }
             
 // -----------------------------------------------------------------------------------------------------------------------------
 // next loop for all particles
 // -----------------------------------------------------------------------------------------------------------------------------
-             
+            
             for (int i = 0; i < Nparticles; i++)
             {
                 x[i] = xnew[i];
@@ -1029,13 +967,8 @@ int main ()
                 u[i] = unew[i];
                 v[i] = vnew[i];
                 rho[i] = rhonew[i];
-
-
-                double errordrhodt = (pow(drhodt[i]-drhodtexact[i],2));
-                L2drhodt += errordrhodt;
+                
             }
-               
-            L2normdrhodt = sqrt(L2drhodt/(Nparticles));
 
         }
 

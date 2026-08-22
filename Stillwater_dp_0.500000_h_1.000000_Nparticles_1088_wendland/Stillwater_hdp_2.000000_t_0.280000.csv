@@ -1,6 +1,6 @@
 h/dp :,2
-L2normdrhodt,dp,Nparticles
-4.38614,0.5,1088
+L2norm Pressure,KE,dp,Nparticles
+1374.22,92.5778,0.5,800
 
 t,0.28
 ID,x,y,,rho,drhodt,pressure,,u,v,,dudt,dvdt,type
