@@ -18,7 +18,7 @@ string type;
 // --------------------------------------------
 
 const double dt = 0.0001; 
-const double Totaltime= 1.0;
+const double Totaltime= 10.0;
 const int Nt = Totaltime / dt;
 
 
@@ -29,7 +29,7 @@ const int Nt = Totaltime / dt;
 const double tanklength = 25.0;
 const double tankheight = 10.0;
 
-const double waterlength = 15.0;
+const double waterlength = 25.0;
 const double freeboard = 2.0;
 const double waterheight = tankheight-freeboard;
 
@@ -92,6 +92,10 @@ const double gamma = 7.0;
 const double B = c0*c0*rho0/gamma;
 
 const double alphaAV = 0.01;
+
+
+//set deltadifussion = 0.0 if it's not considered
+const double deltadifussion = 0.1;
 
 
 
@@ -574,13 +578,13 @@ int main ()
 
             u[i] = 0.0;
             v[i] = 0.0;
-
-            rho[i] = rho0;
+            
+            //rho[i] = rho0;
 
             // Exact hydrostatic initial density for the Tait EOS used here.
             // It satisfies dp/dy = -rho*g in the continuum.
-            //double depth = max(0.0, waterheight - y[i]);
-            //rho[i] = rho0 * pow(1.0 + (gamma - 1.0)*g*depth/(c0*c0), 1.0/(gamma - 1.0));
+            double depth = max(0.0, waterheight - y[i]);
+            rho[i] = rho0 * pow(1.0 + (gamma - 1.0)*g*depth/(c0*c0), 1.0/(gamma - 1.0));
             
             i++;
 
@@ -733,37 +737,37 @@ int main ()
                 // The mDBC formulation becomes unreliable with very low ghost support.
                 // Use at least four fluid neighbours and reject singular/nearly-singular solves.
                 const int minMdbcNeighbors = 4;
+                double drytolerance = 1e-12;
+                double supporttolerance = 0.4;
 
 
+                bool hasfluid = shepardDenominator > drytolerance;
+                bool goodsupport = shepardDenominator > supporttolerance;
+                
                 bool solved = false;
 
 
-                if (Nneighbor >= minMdbcNeighbors)
+                if (goodsupport && Nneighbor >= minMdbcNeighbors)
                 {
                     solved = solveLinear2(A, b, X, n);
                 }
 
-                if (solved)
+                if (!hasfluid)
+                {
+                    rhoghost[i] = rho0;
+                    drhoghostX[i] = 0.0;
+                    drhoghostY[i] = 0.0;
+                }
+
+                else if (solved)
                 {
                     rhoghost[i] = X[0];
                     drhoghostX[i] = X[1];
                     drhoghostY[i] = X[2];
                 }
                 else
-                {
-                    // mDBC / DualSPHysics-style fallback: Shepard-filtered ghost density.
-                    // With no reliable gradient reconstruction, do not extrapolate a noisy gradient.
-                    if (shepardDenominator > 1e-12)
-                    {
-                        rhoghost[i] = shepardNumerator / shepardDenominator;
-                    }
-                    else
-                    {
-                        // This boundary particle has effectively no fluid support
-                        // (for example, a side-wall particle above the free surface).
-                        rhoghost[i] = rho0;
-                    }
-
+                {                    
+                    rhoghost[i] = shepardNumerator / shepardDenominator;
                     drhoghostX[i] = 0.0;
                     drhoghostY[i] = 0.0;
                 }
@@ -803,11 +807,18 @@ int main ()
                     double rx = x[i]-x[j];
                     double ry = y[i]-y[j];
 
-                    double r = sqrt(rx*rx+ry*ry);
+                    double r2 = rx*rx+ry*ry;
+
+                    if (r2 < 1e-14)
+                    {
+                        continue;
+                    }
+                    
+                    double r = sqrt(r2);
                     double q = r/h;
 
-                    double dirx = 0.0;
-                    double diry = 0.0;
+                    double dirx = rx/r;
+                    double diry = ry/r;
 
                     double du = u[i]-u[j];
                     double dv = v[i]-v[j];
@@ -816,14 +827,7 @@ int main ()
 
                     double Piij = 0.0;
 
-
-
-
-                    if (r>0.0)
-                    {
-                        dirx = rx/r;
-                        diry = ry/r;
-                    }
+                    
 
                     //artificial viscosity
                     if (vijrij<0.0)
@@ -855,7 +859,13 @@ int main ()
                         return 1; // Exit the program with an error code
                     }
 
-                    drhodt[i] += (du*result.dWeightX+dv*result.dWeightY)*mass;
+                    double difussionX = 2*(rho[i]-rho[j])*(rx/r2);
+                    double difussionY = 2*(rho[i]-rho[j])*(ry/r2);
+
+
+                    drhodt[i] += ((du*result.dWeightX+dv*result.dWeightY)*mass)+(deltadifussion*h*c0*(mass/rho[j])*(difussionX*result.dWeightX+difussionY*result.dWeightY));
+                    
+                    
                     //dudt[i] += -mass*((pressure[i]/(rho[i]*rho[i]))+(pressure[j]/(rho[j]*rho[j]))+Piij)*result.dWeightX;
                     //dvdt[i] += -mass*((pressure[i]/(rho[i]*rho[i]))+(pressure[j]/(rho[j]*rho[j]))+Piij)*result.dWeightY;
                     
