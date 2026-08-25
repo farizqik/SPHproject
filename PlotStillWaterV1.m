@@ -7,11 +7,11 @@ close all;
 % ==========================================================
 
 simulationFolder = ...
-    "Stillwater_dp_0.500000_h_1.000000_Nparticles_1088_wendland";
+    "Stillwater_dp_0.500000_h_1.000000_Nparticles_672_wendland";
 
-plotVariable = "pressure";
+% plotVariable = "pressure";
 % plotVariable = "density";
-% plotVariable = "velocity";
+ plotVariable = "velocity";
 
 saveVideo = true;
 
@@ -820,7 +820,7 @@ for n = 1:length(files)
 
     drawnow;
 
-    pause(0.01);
+    pause(0.0001);
 
 
     %% -----------------------------------------------------
