@@ -29,7 +29,7 @@ const int Nt = Totaltime / dt;
 const double tanklength = 25.0;
 const double tankheight = 10.0;
 
-const double waterlength = 12.0;
+const double waterlength = 15.0;
 const double freeboard = 2.0;
 const double waterheight = tankheight-freeboard;
 
