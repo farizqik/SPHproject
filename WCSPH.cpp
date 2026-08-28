@@ -17,8 +17,8 @@ string type;
 // Timestep
 // --------------------------------------------
 
-const double dt = 0.0001; 
-const double Totaltime= 20.0;
+const double dt = 0.001; 
+const double Totaltime= 30.0;
 const int Nt = Totaltime / dt;
 
 
@@ -29,7 +29,7 @@ const int Nt = Totaltime / dt;
 const double tanklength = 25.0;
 const double tankheight = 10.0;
 
-const double waterlength = 15.0;
+const double waterlength = 14.0;
 const double freeboard = 2.0;
 const double waterheight = tankheight-freeboard;
 
@@ -596,12 +596,12 @@ int main ()
             u[i] = 0.0;
             v[i] = 0.0;
             
-            //rho[i] = rho0;
+            rho[i] = rho0;
 
             // Exact hydrostatic initial density for the Tait EOS used here.
             // It satisfies dp/dy = -rho*g in the continuum.
-            double depth = max(0.0, waterheight - y[i]);
-            rho[i] = rho0 * pow(1.0 + (gamma - 1.0)*g*depth/(c0*c0), 1.0/(gamma - 1.0));
+            //double depth = max(0.0, waterheight - y[i]);
+            //rho[i] = rho0 * pow(1.0 + (gamma - 1.0)*g*depth/(c0*c0), 1.0/(gamma - 1.0));
             
             i++;
 
@@ -632,7 +632,7 @@ int main ()
 // -----------------------------------------------------------------------------------------------------------------------------
 // mDBC Interpolation at n
 // -----------------------------------------------------------------------------------------------------------------------------
-
+            //#pragma omp parallel for
             for (int i = 0; i < Nboundary; i++)
             {
                 //cummulative should be initialised with zero for each particle
@@ -662,20 +662,23 @@ int main ()
                     double rx = xghost[i]-x[j];
                     double ry = yghost[i]-y[j];
 
-                    double r = sqrt(rx*rx+ry*ry);
-                    double q = r/h;
+                    double r2 = rx*rx+ry*ry;
 
-                    double dirx = 0.0;
-                    double diry = 0.0;
-
-
-                    if (r>0.0)
+                    if ((kernel == "cubic" || kernel == "wendland") && r2 > 4*h*h)
                     {
-                        dirx = rx/r;
-                        diry = ry/r;
+                        continue;
                     }
 
+                    if (r2 < 1e-14)
+                    {
+                        continue;
+                    }
+                    
+                    double r = sqrt(r2);
+                    double q = r/h;
 
+                    double dirx = rx/r;
+                    double diry = ry/r;
 
                     
                     KernelResult result;
@@ -807,7 +810,7 @@ int main ()
 // -----------------------------------------------------------------------------------------------------------------------------
 // Fluid Continuity and Momentum at n
 // -----------------------------------------------------------------------------------------------------------------------------
-
+            //#pragma omp parallel for
             for (int i = Nboundary; i < Nparticles; i++)
             {
                 //cummulative should be initialised with zero for each particle
@@ -824,6 +827,11 @@ int main ()
                     double ry = y[i]-y[j];
 
                     double r2 = rx*rx+ry*ry;
+
+                    if ((kernel == "cubic" || kernel == "wendland") && r2 > 4*h*h)
+                    {
+                        continue;
+                    }
 
                     if (r2 < 1e-14)
                     {
@@ -942,7 +950,7 @@ int main ()
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
-// Compute Time integration for fluid to n+1/2
+// Compute Time integration predictor for fluid to n+1/2
 // -----------------------------------------------------------------------------------------------------------------------------
 
             for (int i = Nboundary; i < Nparticles; i++)
@@ -955,12 +963,12 @@ int main ()
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
-// Compute Time integration for boundary to n+1/2
+// Compute Time integration predictor for boundary to n+1/2
 // -----------------------------------------------------------------------------------------------------------------------------
 
             for (int i = 0; i < Nboundary; i++)
             {
-                rhohalf[i] = rho[i]+drhodt[i]*dt/2;
+
                 uhalf[i] = 0.0;
                 vhalf[i] = 0.0;
                 xhalf[i] = x[i];
@@ -971,7 +979,7 @@ int main ()
 // -----------------------------------------------------------------------------------------------------------------------------
 // mDBC Interpolation to n+1/2
 // -----------------------------------------------------------------------------------------------------------------------------
-
+            //#pragma omp parallel for
             for (int i = 0; i < Nboundary; i++)
             {
                 //cummulative should be initialised with zero for each particle
@@ -1001,20 +1009,23 @@ int main ()
                     double rx = xghost[i]-xhalf[j];
                     double ry = yghost[i]-yhalf[j];
 
-                    double r = sqrt(rx*rx+ry*ry);
-                    double q = r/h;
+                    double r2 = rx*rx+ry*ry;
 
-                    double dirx = 0.0;
-                    double diry = 0.0;
-
-
-                    if (r>0.0)
+                    if ((kernel == "cubic" || kernel == "wendland") && r2 > 4*h*h)
                     {
-                        dirx = rx/r;
-                        diry = ry/r;
+                        continue;
                     }
 
+                    if (r2 < 1e-14)
+                    {
+                        continue;
+                    }
+                    
+                    double r = sqrt(r2);
+                    double q = r/h;
 
+                    double dirx = rx/r;
+                    double diry = ry/r;
 
                     
                     KernelResult result;
@@ -1138,7 +1149,7 @@ int main ()
 // -----------------------------------------------------------------------------------------------------------------------------
 // Fluid Continuity and Momentum at n+1/2
 // -----------------------------------------------------------------------------------------------------------------------------
-
+            //#pragma omp parallel for
             for (int i = Nboundary; i < Nparticles; i++)
             {
                 //cummulative should be initialised with zero for each particle
@@ -1155,6 +1166,11 @@ int main ()
                     double ry = yhalf[i]-yhalf[j];
 
                     double r2 = rx*rx+ry*ry;
+
+                    if ((kernel == "cubic" || kernel == "wendland") && r2 > 4*h*h)
+                    {
+                        continue;
+                    }
 
                     if (r2 < 1e-14)
                     {
@@ -1223,7 +1239,59 @@ int main ()
 
             }
 
+
 // -----------------------------------------------------------------------------------------------------------------------------
+// Compute Time integration corrector for fluid to n+1/2
+// -----------------------------------------------------------------------------------------------------------------------------
+
+            for (int i = Nboundary; i < Nparticles; i++)
+            {
+                rhohalf[i] = rho[i]+drhodthalf[i]*dt/2;
+                uhalf[i] = u[i]+dudthalf[i]*dt/2;
+                vhalf[i] = v[i]+(dvdthalf[i]-g)*dt/2;
+                xhalf[i] = x[i]+uhalf[i]*dt/2;
+                yhalf[i] = y[i]+vhalf[i]*dt/2;
+            }
+
+// -----------------------------------------------------------------------------------------------------------------------------
+// Compute Time integration corrector for boundary to n+1/2
+// -----------------------------------------------------------------------------------------------------------------------------
+
+            for (int i = 0; i < Nboundary; i++)
+            {
+
+                uhalf[i] = 0.0;
+                vhalf[i] = 0.0;
+                xhalf[i] = x[i];
+                yhalf[i] = y[i];
+            }
+
+
+// -----------------------------------------------------------------------------------------------------------------------------
+// Compute Time integration to n+1
+// -----------------------------------------------------------------------------------------------------------------------------
+
+// For Boundary
+            for (int i = 0; i < Nboundary; i++)
+            {
+                rhonew[i] = rhohalf[i];
+                unew[i] = 0.0;
+                vnew[i] = 0.0;
+                xnew[i] = xhalf[i];
+                ynew[i] = yhalf[i];
+            }
+
+// For Fluid          
+            for (int i = Nboundary; i < Nparticles; i++)
+            {
+                rhonew[i] = 2*rhohalf[i]-rho[i];
+                unew[i] = 2*uhalf[i]-u[i];
+                vnew[i] = 2*vhalf[i]-v[i];
+                xnew[i] = 2*xhalf[i]-x[i];
+                ynew[i] = 2*yhalf[i]-y[i];
+            }
+
+/*// -----------------------------------------------------------------------------------------------------------------------------
 // Compute Time integration to n+1
 // -----------------------------------------------------------------------------------------------------------------------------
 
@@ -1246,7 +1314,7 @@ int main ()
                 xnew[i] = x[i]+uhalf[i]*dt;
                 ynew[i] = y[i]+vhalf[i]*dt;
             }
-
+*/
            
 // -----------------------------------------------------------------------------------------------------------------------------
 // next loop for all particles
