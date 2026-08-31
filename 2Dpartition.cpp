@@ -8,17 +8,8 @@
 
 using namespace std;
 
-const double dr = 0.1;
-const double dz = 0.1;
-const int Ncol = 50;
-const int Nrow = 50;
-const double VelcoefX = 0.1;
-const double VelcoefY = 0.0;
 
 const double PI = 3.14159265358979323846;
-
-const double rho = 1000.0;
-
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Kernel functions
@@ -34,14 +25,14 @@ struct KernelResult {
 // -----------------------------------------------------------------------------------------------------------------------------
 // Gaussian kernel
 // -----------------------------------------------------------------------------------------------------------------------------
-KernelResult gaussian(double q, double h, double dirR, double dirZ)
+KernelResult gaussian(double q, double h, double dirx, double diry)
 {
     KernelResult result;
     double alpha = 1.0 / (PI * h * h);
 
     result.Weight = alpha*exp(-q*q);
-    result.dWeightX = -2.0*alpha*q*exp(-q*q)/h * dirR;
-    result.dWeightY = -2.0*alpha*q*exp(-q*q)/h * dirZ;
+    result.dWeightX = -2.0*alpha*q*exp(-q*q)/h * dirx;
+    result.dWeightY = -2.0*alpha*q*exp(-q*q)/h * diry;
 
     return result;
 }
@@ -50,21 +41,21 @@ KernelResult gaussian(double q, double h, double dirR, double dirZ)
 // -----------------------------------------------------------------------------------------------------------------------------
 // Cubic kernel
 // -----------------------------------------------------------------------------------------------------------------------------
-KernelResult cubicSpline(double q, double h, double dirR, double dirZ)
+KernelResult cubicSpline(double q, double h, double dirx, double diry)
 {
     double alpha = 10.0 / (7.0 * PI * h * h);
     KernelResult result;
     if (q<=1.0)
     {
         result.Weight = alpha*(1.0-1.5*pow(q,2)+0.75*pow(q,3));
-        result.dWeightX = alpha*(-3.0*q+2.25*pow(q,2))/h * dirR;
-        result.dWeightY = alpha*(-3.0*q+2.25*pow(q,2))/h * dirZ;
+        result.dWeightX = alpha*(-3.0*q+2.25*pow(q,2))/h * dirx;
+        result.dWeightY = alpha*(-3.0*q+2.25*pow(q,2))/h * diry;
     }
     else if (q<=2.0)
     {
         result.Weight = alpha*0.25*pow(2.0-q,3);
-        result.dWeightX = -0.75*alpha*pow(2.0-q,2)/h * dirR;
-        result.dWeightY = -0.75*alpha*pow(2.0-q,2)/h * dirZ;
+        result.dWeightX = -0.75*alpha*pow(2.0-q,2)/h * dirx;
+        result.dWeightY = -0.75*alpha*pow(2.0-q,2)/h * diry;
     }
     else
     {
@@ -79,15 +70,15 @@ KernelResult cubicSpline(double q, double h, double dirR, double dirZ)
 // -----------------------------------------------------------------------------------------------------------------------------
 // Wendland kernel
 // -----------------------------------------------------------------------------------------------------------------------------
-KernelResult Wendland(double q, double h, double dirR, double dirZ)
+KernelResult Wendland(double q, double h, double dirx, double diry)
 {
     double alpha = 7.0 / (4.0 * PI * h * h);
     KernelResult result;
     if (0.0<=q && q<=2.0)
     {
         result.Weight = alpha*pow(1.0-0.5*q,4)*(2.0*q+1.0);
-        result.dWeightX = alpha*(4*pow(1.0-0.5*q,3)*(-0.5)*(2.0*q+1.0)+pow(1.0-0.5*q,4)*2.0)/h * dirR;
-        result.dWeightY = alpha*(4*pow(1.0-0.5*q,3)*(-0.5)*(2.0*q+1.0)+pow(1.0-0.5*q,4)*2.0)/h * dirZ;
+        result.dWeightX = alpha*(4*pow(1.0-0.5*q,3)*(-0.5)*(2.0*q+1.0)+pow(1.0-0.5*q,4)*2.0)/h * dirx;
+        result.dWeightY = alpha*(4*pow(1.0-0.5*q,3)*(-0.5)*(2.0*q+1.0)+pow(1.0-0.5*q,4)*2.0)/h * diry;
     }
     else
     {
@@ -112,27 +103,38 @@ int main ()
         cout << "h : " << h << endl;
 
         // parameters
+        
+        const double dx = 0.1;
+        const double dy = 0.1;
+        const int Ncol = 50;
+        const int Nrow = 50;
+        const double VelcoefX = 0.1;
+        const double VelcoefY = 0.0;
+
+        const double PI = 3.14159265358979323846;
+
+        const double rho = 1000.0;
 
         double drhodtexact = -rho*(VelcoefX+VelcoefY);
 
-        double r[Ncol][Nrow];
-        double z[Ncol][Nrow];
+        double x[Ncol][Nrow];
+        double y[Ncol][Nrow];
 
-        double u_r[Ncol][Nrow];
-        double u_z[Ncol][Nrow];
+        double u[Ncol][Nrow];
+        double v[Ncol][Nrow];
 
         double PGauss[Ncol][Nrow];
         double PCubic[Ncol][Nrow];
         double PWedn[Ncol][Nrow];
 
-        double dPGaussR[Ncol][Nrow];
-        double dPGaussZ[Ncol][Nrow];
+        double dPGaussX[Ncol][Nrow];
+        double dPGaussY[Ncol][Nrow];
 
-        double dPCubicR[Ncol][Nrow];
-        double dPCubicZ[Ncol][Nrow];
+        double dPCubicX[Ncol][Nrow];
+        double dPCubicY[Ncol][Nrow];
 
-        double dPWednR[Ncol][Nrow];
-        double dPWednZ[Ncol][Nrow];
+        double dPWednX[Ncol][Nrow];
+        double dPWednY[Ncol][Nrow];
 
         double drhodtGauss[Ncol][Nrow];
         double drhodtCubic[Ncol][Nrow];
@@ -159,10 +161,10 @@ int main ()
         for (int i = 0; i < Ncol; i++)
         for (int j = 0; j < Nrow; j++)
         {
-            r[i][j] =  i * dr;
-            z[i][j] =  j * dz;
-            u_r[i][j] =  VelcoefX*r[i][j];
-            u_z[i][j] =  VelcoefY*z[i][j];
+            x[i][j] =  i * dx;
+            y[i][j] =  j * dy;
+            u[i][j] =  VelcoefX*x[i][j];
+            v[i][j] =  VelcoefY*y[i][j];
         }
 
         
@@ -173,12 +175,12 @@ int main ()
             PGauss[i][j] = 0.0;
             PCubic[i][j] = 0.0;
             PWedn[i][j] = 0.0;
-            dPGaussR[i][j] = 0.0;
-            dPGaussZ[i][j] = 0.0; 
-            dPCubicR[i][j] = 0.0;
-            dPCubicZ[i][j] = 0.0;
-            dPWednR[i][j] = 0.0;
-            dPWednZ[i][j] = 0.0;
+            dPGaussX[i][j] = 0.0;
+            dPGaussY[i][j] = 0.0; 
+            dPCubicX[i][j] = 0.0;
+            dPCubicY[i][j] = 0.0;
+            dPWednX[i][j] = 0.0;
+            dPWednY[i][j] = 0.0;
             drhodtGauss[i][j] = 0.0;
             drhodtCubic[i][j] = 0.0;
             drhodtWedn[i][j] = 0.0;
@@ -188,44 +190,44 @@ int main ()
             for (int l = 0 ; l < Nrow; l++)
             {
 
-                double sr = r[i][j]-r[k][l];
-                double sz = z[i][j]-z[k][l];
+                double rx = x[i][j]-x[k][l];
+                double ry = y[i][j]-y[k][l];
 
-                double r2 = sr*sr+sz*sz;
+                double r2 = rx*rx+ry*ry;
 
                 double r = sqrt(r2);
                 double q = r/h;              
 
-                double du = u_r[i][j]-u_r[k][l];
-                double dv = u_z[i][j]-u_z[k][l];
+                double du = u[i][j]-u[k][l];
+                double dv = v[i][j]-v[k][l];
 
-                double dirR = 0.0;
-                double dirZ = 0.0;
+                double dirx = 0.0;
+                double diry = 0.0;
                 if (r2>0.0)
                 {
-                    dirR = sr/r;
-                    dirZ = sz/r;
+                    dirx = rx/r;
+                    diry = ry/r;
                 }
 
                 KernelResult result;
 
-                result = gaussian(q, h, dirR, dirZ);
-                PGauss[i][j] += result.Weight*dr*dz;
-                dPGaussR[i][j] += result.dWeightX*dr*dz;
-                dPGaussZ[i][j] += result.dWeightY*dr*dz;
-                drhodtGauss[i][j] += (du*result.dWeightX+dv*result.dWeightY)*dr*dz*rho;
+                result = gaussian(q, h, dirx, diry);
+                PGauss[i][j] += result.Weight*dx*dy;
+                dPGaussX[i][j] += result.dWeightX*dx*dy;
+                dPGaussY[i][j] += result.dWeightY*dx*dy;
+                drhodtGauss[i][j] += (du*result.dWeightX+dv*result.dWeightY)*dx*dy*rho;
                 
-                result = cubicSpline(q, h, dirR, dirZ);
-                PCubic[i][j] += result.Weight*dr*dz;
-                dPCubicR[i][j] += result.dWeightX*dr*dz;
-                dPCubicZ[i][j] += result.dWeightY*dr*dz;
-                drhodtCubic[i][j] += (du*result.dWeightX+dv*result.dWeightY)*dr*dz*rho;
+                result = cubicSpline(q, h, dirx, diry);
+                PCubic[i][j] += result.Weight*dx*dy;
+                dPCubicX[i][j] += result.dWeightX*dx*dy;
+                dPCubicY[i][j] += result.dWeightY*dx*dy;
+                drhodtCubic[i][j] += (du*result.dWeightX+dv*result.dWeightY)*dx*dy*rho;
 
-                result = Wendland(q, h, dirR, dirZ);
-                PWedn[i][j] += result.Weight*dr*dz;
-                dPWednR[i][j] += result.dWeightX*dr*dz;
-                dPWednZ[i][j] += result.dWeightY*dr*dz;
-                drhodtWedn[i][j] += (du*result.dWeightX+dv*result.dWeightY)*dr*dz*rho;
+                result = Wendland(q, h, dirx, diry);
+                PWedn[i][j] += result.Weight*dx*dy;
+                dPWednX[i][j] += result.dWeightX*dx*dy;
+                dPWednY[i][j] += result.dWeightY*dx*dy;
+                drhodtWedn[i][j] += (du*result.dWeightX+dv*result.dWeightY)*dx*dy*rho;
 
         
             }
@@ -246,19 +248,19 @@ int main ()
         L2normdrhodtWedn = sqrt(L2drhodtWedn/(Ncol*Nrow));
 
 
-        string filename = "2DPartitionpolar_hdp_" + to_string(h/dr) + ".csv";
+        string filename = "2DPartition_hdp_" + to_string(h/dx) + ".csv";
 
         ofstream file(filename);
-        file << "h/dr :" << "," << h/dr << endl;
-        file << "h/dz :" << "," << h/dz << endl;
+        file << "h/dx :" << "," << h/dx << endl;
+        file << "h/dy :" << "," << h/dy << endl;
         file << "L2normPGauss" << "," << "L2normPCubic" << "," << "L2normPWedn" << "," << "L2normdrhodtGauss" << "," << "L2normdrhodtCubic" << "," << "L2normdrhodtWedn" << endl;
         file << L2normPGauss << "," << L2normPCubic << "," << L2normPWedn << "," << L2normdrhodtGauss << "," << L2normdrhodtCubic << "," << L2normdrhodtWedn << endl;
         file << endl;
-        file << "r"<< "," << "z" << ","<< "," << "PGauss" << "," << "PCubic" << "," << "PWedn" << "," << ","<< "dPGaussR" << "," << "dPGaussZ" << "," << ","<< "dPCubicR" << "," << "dPCubicZ" << ","<< "," << "dPWednR" << "," << "dPWednZ" << "," << "," << "drhodtGauss" << "," << "drhodtCubic" << "," << "drhodtWedn" << endl;
+        file << "x"<< "," << "y" << ","<< "," << "PGauss" << "," << "PCubic" << "," << "PWedn" << "," << ","<< "dPGaussX" << "," << "dPGaussY" << "," << ","<< "dPCubicX" << "," << "dPCubicY" << ","<< "," << "dPWednX" << "," << "dPWednY" << "," << "," << "drhodtGauss" << "," << "drhodtCubic" << "," << "drhodtWedn" << endl;
         for (int i = 0; i < Ncol; i++)
         for (int j = 0; j < Nrow; j++)
             {
-                file << r[i][j] << "," << z[i][j] << "," << "," << PGauss[i][j] << "," << PCubic[i][j] << "," << PWedn[i][j] << "," << "," << dPGaussR[i][j] << "," << dPGaussZ[i][j] << "," << "," << dPCubicR[i][j] << "," << dPCubicZ[i][j] << "," <<"," << dPWednR[i][j] << "," << dPWednZ[i][j]<< "," << "," << drhodtGauss[i][j] << "," << drhodtCubic[i][j] << "," << drhodtWedn[i][j] << endl;
+                file << x[i][j] << "," << y[i][j] << "," << "," << PGauss[i][j] << "," << PCubic[i][j] << "," << PWedn[i][j] << "," << "," << dPGaussX[i][j] << "," << dPGaussY[i][j] << "," << "," << dPCubicX[i][j] << "," << dPCubicY[i][j] << "," <<"," << dPWednX[i][j] << "," << dPWednY[i][j]<< "," << "," << drhodtGauss[i][j] << "," << drhodtCubic[i][j] << "," << drhodtWedn[i][j] << endl;
             }
         file << endl;
         file << endl;

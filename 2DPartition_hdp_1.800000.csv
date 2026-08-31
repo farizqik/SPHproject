@@ -1,5 +1,5 @@
-dx/h :,0.555556
-dy/h :,0.555556
+h/dx :,1.8
+h/dy :,1.8
 L2normPGauss,L2normPCubic,L2normPWedn,L2normdrhodtGauss,L2normdrhodtCubic,L2normdrhodtWedn
 0.104177,0.0907378,0.0849207,14.7339,13.4588,12.9303
 
