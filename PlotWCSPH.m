@@ -7,11 +7,11 @@ close all;
 % ==========================================================
 
 simulationFolder = ...
-    "WCSPH_dp_0.500000_h_1.000000_Nparticles_736_wendland";
+    "WCSPH_dp_0.500000_h_1.000000_Nparticles_768_wendland";
 
-% plotVariable = "pressure";
+ plotVariable = "pressure";
 % plotVariable = "density";
- plotVariable = "velocity";
+% plotVariable = "velocity";
 
 saveVideo = true;
 
@@ -63,7 +63,7 @@ boundthick = 3*dp;
 % ==========================================================
 
 pattern = sprintf( ...
-    "Stillwater_hdp_%.6f_t_*.csv", ...
+    "WCSPH_hdp_%.6f_t_*.csv", ...
     hdp);
 
 files = dir( ...
@@ -649,7 +649,7 @@ if saveVideo
         videoName, ...
         'MPEG-4');
 
-    video.FrameRate = 5;
+    video.FrameRate = 50;
 
     open(video);
 

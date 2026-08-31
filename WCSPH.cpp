@@ -18,7 +18,7 @@ string type;
 // --------------------------------------------
 
 const double dt = 0.001; 
-const double Totaltime= 30.0;
+const double Totaltime= 20.0;
 const int Nt = Totaltime / dt;
 
 
@@ -29,7 +29,7 @@ const int Nt = Totaltime / dt;
 const double tanklength = 25.0;
 const double tankheight = 10.0;
 
-const double waterlength = 14.0;
+const double waterlength = 15.0;
 const double freeboard = 2.0;
 const double waterheight = tankheight-freeboard;
 
@@ -448,7 +448,7 @@ int main ()
         double h = hlist[m];
         cout << "h/dp : " << h/dp << endl;
         string foldername = 
-            "Stillwater_dp_" + to_string(dp) + "_h_" + to_string(h) + "_Nparticles_" + to_string(Nparticles) + "_" + kernel; 
+            "WCSPH_dp_" + to_string(dp) + "_h_" + to_string(h) + "_Nparticles_" + to_string(Nparticles) + "_" + kernel; 
         //system(("mkdir -p " + foldername).c_str());
         std::filesystem::create_directories(foldername);
 
@@ -623,7 +623,7 @@ int main ()
 // start time loop
 // -----------------------------------------------------------------------------------------------------------------------------
 
-        for (int n=0;n<Nt;n++)
+        for (int n=0;n<Nt+1;n++)
         {
 
             double t = n*dt;
@@ -803,6 +803,10 @@ int main ()
             double KE = 0.0;
             for (int i = 0; i < Nparticles; i++)
             {
+                if (y[i]<-boundthick)
+                {
+                    continue;
+                }
                 KE += 0.5 * mass* ((u[i]*u[i])+(v[i]*v[i]));
             }
 
@@ -924,7 +928,7 @@ int main ()
             if (n % int(0.01/dt) == 0)
             {
                 cout << "t : " << t << endl;
-                string filename = foldername + "/Stillwater_hdp_" + to_string(h/dp) + "_t_" + to_string(t) + ".csv";
+                string filename = foldername + "/WCSPH_hdp_" + to_string(h/dp) + "_t_" + to_string(t) + ".csv";
 
                 ofstream file(filename);
                 file << "h/dp :" << "," << h/dp << endl;
