@@ -188,28 +188,6 @@ int main ()
 
         double drhodtexact = -rho*(2*VelcoefR+VelcoefZ);
 
-        /*double r[Ncol][Nrow];
-        double z[Ncol][Nrow];
-
-        double u_r[Ncol][Nrow];
-        double u_z[Ncol][Nrow];
-
-        double PGauss[Ncol][Nrow];
-        double PCubic[Ncol][Nrow];
-        double PWedn[Ncol][Nrow];
-
-        double dPGaussR[Ncol][Nrow];
-        double dPGaussZ[Ncol][Nrow];
-
-        double dPCubicR[Ncol][Nrow];
-        double dPCubicZ[Ncol][Nrow];
-
-        double dPWednR[Ncol][Nrow];
-        double dPWednZ[Ncol][Nrow];
-
-        double drhodtGauss[Ncol][Nrow];
-        double drhodtCubic[Ncol][Nrow];
-        double drhodtWedn[Ncol][Nrow];*/
 
         double L2PGauss = 0.0;
         double L2PCubic = 0.0;

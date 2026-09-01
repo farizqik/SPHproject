@@ -26,10 +26,10 @@ const int Nt = Totaltime / dt;
 // Geometry
 // ------------------------------------------------------------
 
-const double tanklength = 25.0;
+const double tankradius = 25.0;
 const double tankheight = 10.0;
 
-const double waterlength = 15.0;
+const double waterradius = 15.0;
 const double freeboard = 2.0;
 const double waterheight = tankheight-freeboard;
 
@@ -280,6 +280,153 @@ bool solveLinear(double A[][3], double b[], double X[], int n)
 }
 
 
+// --------------------------------------------------
+// Compute the interaction between particle i and j
+// --------------------------------------------------
+#include <stdexcept>
+
+void accumulateAxisymmetricInteraction(
+    // Particle i
+    double ri,
+    double zi,
+    double ur_i,
+    double uz_i,
+    double rhoi,
+    double pi,
+
+    // Particle j
+    double rj,
+    double zj,
+    double ur_j,
+    double uz_j,
+    double rhoj,
+    double pj,
+    double mj,
+
+    // SPH settings
+    double h,
+    const string& kernel,
+
+    // Accumulators for particle i
+    double& drhoAcc,
+    double& durAcc,
+    double& duzAcc)
+{
+    double sr = ri - rj;
+    double sz = zi - zj;
+
+    double s2 = sr*sr + sz*sz;
+
+    // Compact-kernel support
+    if ((kernel == "cubic" || kernel == "wendland") &&
+        s2 > 4.0*h*h)
+    {
+        return;
+    }
+
+    // Exclude self/coincident interaction
+    if (s2 < 1e-14)
+    {
+        return;
+    }
+
+    double ds = sqrt(s2);
+    double q  = ds/h;
+
+    double dirR = sr/ds;
+    double dirZ = sz/ds;
+
+    double du_r = ur_i - ur_j;
+    double du_z = uz_i - uz_j;
+
+    double vijrij = du_r*sr + du_z*sz;
+
+    // ---------------------------------------------------------
+    // Artificial viscosity
+    // ---------------------------------------------------------
+
+    double Piij = 0.0;
+
+    if (vijrij < 0.0)
+    {
+        double muij =
+            h*vijrij/(s2 + 0.01*h*h);
+
+        double rhoij =
+            0.5*(rhoi + rhoj);
+
+        Piij =
+            -alphaAV*c0*muij/rhoij;
+    }
+
+    // ---------------------------------------------------------
+    // Kernel
+    // ---------------------------------------------------------
+
+    KernelResult result;
+
+    if (kernel == "gaussian")
+    {
+        result = gaussian(q, h, dirR, dirZ);
+    }
+    else if (kernel == "cubic")
+    {
+        result = cubicSpline(q, h, dirR, dirZ);
+    }
+    else if (kernel == "wendland")
+    {
+        result = Wendland(q, h, dirR, dirZ);
+    }
+    else
+    {
+        throw invalid_argument(
+            "Kernel must be gaussian, cubic, or wendland.");
+    }
+
+    // ---------------------------------------------------------
+    // Axisymmetric continuity equation
+    // ---------------------------------------------------------
+
+    drhoAcc +=
+        (1.0/(2.0*PI)) *
+        (mj/rj) *
+        (
+            du_r*result.dWeightR +
+            du_z*result.dWeightZ
+        );
+
+    // ---------------------------------------------------------
+    // Common pressure and viscosity coefficient
+    // ---------------------------------------------------------
+
+    double pressureTerm =
+        (pi*ri + pj*rj) /
+        (
+            (2.0*PI*ri*rhoi) *
+            (2.0*PI*rj*rhoj)
+        );
+
+    double interactionTerm =
+        pressureTerm + Piij/(2.0*PI);
+
+    // ---------------------------------------------------------
+    // Radial momentum equation
+    // ---------------------------------------------------------
+
+    durAcc -=
+        2.0*PI*mj*interactionTerm*
+        result.dWeightR;
+
+    // ---------------------------------------------------------
+    // Axial momentum equation
+    // ---------------------------------------------------------
+
+    duzAcc -=
+        2.0*PI*mj*interactionTerm*
+        result.dWeightZ;
+}
+
+
 
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -300,7 +447,83 @@ int main ()
 
     for (double zp = -0.5*dp; zp > -boundthick; zp -= dp)
     {
-        for (double rp = -boundthick+0.5*dp; rp < tanklength + boundthick + 0.5*dp; rp += dp)
+        for (double rp = 0.5*dp; rp < tankradius; rp += dp)
+        {
+
+            cout << "ID: " << i
+             << "  Type: Boundary"
+             << "  x: " << rp
+             << "  y: " << zp
+             << endl;
+
+            i++;
+
+        }
+    }
+
+    // Outer radial wall
+    for (double rp = tankradius + 0.5*dp;
+         rp < tankradius + boundthick;
+         rp += dp)
+    {
+        for (double zp = -boundthick; zp < tankheight; zp += dp)
+        {
+
+            cout << "ID: " << i
+             << "  Type: Boundary"
+             << "  x: " << rp
+             << "  y: " << zp
+             << endl;
+
+
+            i++;
+            
+        }
+    }
+
+    int Nboundary = i;
+
+    for (double rp = 0.5*dp; rp < waterradius; rp += dp)
+    {
+        for (double zp = 0.5*dp; zp < waterheight; zp += dp)
+        {
+
+            cout << "ID: " << i
+             << "  Type: Fluid"
+             << "  x: " << rp
+             << "  y: " << zp
+             << endl;
+
+            i++;
+
+        }
+    }
+
+    // Total number of particles
+    int Nparticles = i;
+
+    int Nfluid = Nparticles - Nboundary;
+
+    cout << endl;
+    cout << "Boundary particles = " << Nboundary << endl;
+    cout << "Fluid particles    = " << Nfluid << endl;
+    cout << "Total particles    = " << Nparticles << endl;
+
+
+
+
+
+
+
+
+
+    /*int i = 0;
+
+    //Bottom Boundary Particles
+
+    for (double zp = -0.5*dp; zp > -boundthick; zp -= dp)
+    {
+        for (double rp = -boundthick+0.5*dp; rp < tankradius + boundthick + 0.5*dp; rp += dp)
         {
 
             cout << "ID: " << i
@@ -331,8 +554,8 @@ int main ()
     }
 
     // Right boundary
-    for (double rp = tanklength + 0.5*dp;
-         rp < tanklength + boundthick;
+    for (double rp = tankradius + 0.5*dp;
+         rp < tankradius + boundthick;
          rp += dp)
     {
         for (double zp = 0.5*dp; zp < tankheight; zp += dp)
@@ -352,7 +575,7 @@ int main ()
 
     int Nboundary = i;
 
-    for (double rp = 0.5*dp; rp < waterlength; rp += dp)
+    for (double rp = 0.5*dp; rp < waterradius; rp += dp)
     {
         for (double zp = 0.5*dp; zp < waterheight; zp += dp)
         {
@@ -376,7 +599,7 @@ int main ()
     cout << endl;
     cout << "Boundary particles = " << Nboundary << endl;
     cout << "Fluid particles    = " << Nfluid << endl;
-    cout << "Total particles    = " << Nparticles << endl;
+    cout << "Total particles    = " << Nparticles << endl;*/
     
 
 
@@ -397,8 +620,8 @@ int main ()
         cout << "h/dp : " << h/dp << endl;
         string foldername = 
             "WCSPHpolar_dp_" + to_string(dp) + "_h_" + to_string(h) + "_Nparticles_" + to_string(Nparticles) + "_" + kernel; 
-        system(("mkdir -p " + foldername).c_str());
-        //std::filesystem::create_directories(foldername);
+        //system(("mkdir -p " + foldername).c_str());
+        std::filesystem::create_directories(foldername);
 
         r.resize(Nparticles);
         z.resize(Nparticles);
@@ -455,7 +678,7 @@ int main ()
 
     for (double zp = -0.5*dp; zp > -boundthick; zp -= dp)
     {
-        for (double rp = -boundthick+0.5*dp; rp < tanklength + boundthick + 0.5*dp; rp += dp)
+        for (double rp = 0.5*dp; rp < tankradius; rp += dp)
         {
 
             r[i] = rp;
@@ -464,24 +687,9 @@ int main ()
             u_r[i] = 0.0;
             u_z[i] = 0.0;
 
-            if (rp < 0)
-            {
-                rghost[i] = -r[i];
-                zghost[i] = -z[i];
-            }
-
-            else if (rp > tanklength)
-            {
-                rghost[i] = 2*tanklength-r[i];
-                zghost[i] = -z[i];
-            }
-
-            else
-            {
-                rghost[i] = r[i];
-                zghost[i] = -z[i];
-            }
-            
+            rghost[i] = r[i];
+            zghost[i] = -z[i];
+          
             rho[i] = rho0;
 
             i++;
@@ -489,39 +697,19 @@ int main ()
         }
     }
 
-    // Left boundary
-    for (double rp = -0.5*dp; rp > -boundthick; rp -= dp)
-    {
-        for (double zp = 0.5*dp; zp < tankheight; zp += dp)
-        {
 
-            r[i] = rp;
-            z[i] = zp;
-
-            rghost[i] = -r[i];
-            zghost[i] = z[i];
-
-            u_r[i] = 0.0;
-            u_z[i] = 0.0;
-
-            rho[i] = rho0;
-            
-            i++;
-        }
-    }
-
-    // Right boundary
-    for (double rp = tanklength + 0.5*dp;
-         rp < tanklength + boundthick;
+    // Outer radial wall
+    for (double rp = tankradius + 0.5*dp;
+         rp < tankradius + boundthick;
          rp += dp)
     {
-        for (double zp = 0.5*dp; zp < tankheight; zp += dp)
+        for (double zp = -boundthick+0.5*dp; zp < tankheight; zp += dp)
         {
 
             r[i] = rp;
             z[i] = zp;
 
-            rghost[i] = 2*tanklength-r[i];
+            rghost[i] = 2*tankradius-r[i];
             zghost[i] = z[i];
 
             u_r[i] = 0.0;
@@ -534,8 +722,8 @@ int main ()
         }
     }
 
-
-    for (double rp = 0.5*dp; rp < waterlength; rp += dp)
+    //fluid 
+    for (double rp = 0.5*dp; rp < waterradius; rp += dp)
     {
         for (double zp = 0.5*dp; zp < waterheight; zp += dp)
         {
@@ -564,6 +752,105 @@ int main ()
         drhodtexact[i] = -rho[i]*(0.0);
         pressureexact[i] = rho0*g*(waterheight-z[i]);                                
     }
+
+
+
+
+    /*int i = 0;
+
+    //Bottom Boundary Particles
+
+    for (double zp = -0.5*dp; zp > -boundthick; zp -= dp)
+    {
+        for (double rp = 0.5*dp; rp < tankradius + boundthick; rp += dp)
+        {
+
+            r[i] = rp;
+            z[i] = zp;
+
+            u_r[i] = 0.0;
+            u_z[i] = 0.0;
+
+            if (rp < 0)
+            {
+                rghost[i] = -r[i];
+                zghost[i] = -z[i];
+            }
+
+            else if (rp > tankradius)
+            {
+                rghost[i] = 2*tankradius-r[i];
+                zghost[i] = -z[i];
+            }
+
+            else
+            {
+                rghost[i] = r[i];
+                zghost[i] = -z[i];
+            }
+            
+            rho[i] = rho0;
+
+            i++;
+
+        }
+    }
+
+
+    // Right boundary
+    for (double rp = tankradius + 0.5*dp;
+         rp < tankradius + boundthick;
+         rp += dp)
+    {
+        for (double zp = 0.5*dp; zp < tankheight; zp += dp)
+        {
+
+            r[i] = rp;
+            z[i] = zp;
+
+            rghost[i] = 2*tankradius-r[i];
+            zghost[i] = z[i];
+
+            u_r[i] = 0.0;
+            u_z[i] = 0.0;
+
+            rho[i] = rho0;
+            
+            i++;
+            
+        }
+    }
+
+
+    for (double rp = 0.5*dp; rp < waterradius; rp += dp)
+    {
+        for (double zp = 0.5*dp; zp < waterheight; zp += dp)
+        {
+
+            r[i] = rp;
+            z[i] = zp;
+
+            u_r[i] = 0.0;
+            u_z[i] = 0.0;
+            
+            //rho[i] = rho0;
+
+            // Exact hydrostatic initial density for the Tait EOS used here.
+            // It satisfies dp/dy = -rho*g in the continuum.
+            double depth = max(0.0, waterheight - z[i]);
+            rho[i] = rho0 * pow(1.0 + (gammaEOS - 1.0)*g*depth/(c0*c0), 1.0/(gammaEOS - 1.0));
+            
+            i++;
+
+        }
+    }
+
+    for (int i = 0; i < Nparticles; i++)
+    {
+        mass[i] = 2.0*PI*r[i]*rho[i]*dp*dp;
+        drhodtexact[i] = -rho[i]*(0.0);
+        pressureexact[i] = rho0*g*(waterheight-z[i]);                                
+    }*/
 
      
 
@@ -778,8 +1065,32 @@ int main ()
 
                 for (int j = 0; j < Nparticles; j++)
                 {
+
+                     accumulateAxisymmetricInteraction(
+                        r[i],
+                        z[i],
+                        u_r[i],
+                        u_z[i],
+                        rho[i],
+                        pressure[i],
+
+                        r[j],
+                        z[j],
+                        u_r[j],
+                        u_z[j],
+                        rho[j],
+                        pressure[j],
+                        mass[j],
+
+                        h,
+                        kernel,
+
+                        drhodt[i],
+                        du_rdt[i],
+                        du_zdt[i]);
+                }   
                     
-                    double sr = r[i]-r[j];
+                    /*double sr = r[i]-r[j];
                     double sz = z[i]-z[j];
 
                     double s2 = sr*sr+sz*sz;
@@ -846,7 +1157,7 @@ int main ()
                     drhodt[i] += (1.0/(2*PI))*((mass[j]/r[j])*(du_r*result.dWeightR+du_z*result.dWeightZ));                 
                     du_rdt[i] -= 2*PI*mass[j]*(((pressure[i]*r[i]+pressure[j]*r[j])/(2*PI*r[i]*rho[i]*2*PI*r[j]*rho[j]))+(Piij/(2*PI)))*result.dWeightR;
                     du_zdt[i] -= 2*PI*mass[j]*(((pressure[i]*r[i]+pressure[j]*r[j])/(2*PI*r[i]*rho[i]*2*PI*r[j]*rho[j]))+(Piij/(2*PI)))*result.dWeightZ;
-                }
+                }*/
 
 
 
@@ -1115,7 +1426,30 @@ int main ()
                 for (int j = 0; j < Nparticles; j++)
                 {
 
-                    double sr = rhalf[i]-rhalf[j];
+                    accumulateAxisymmetricInteraction(
+                        rhalf[i],
+                        zhalf[i],
+                        u_rhalf[i],
+                        u_zhalf[i],
+                        rhohalf[i],
+                        pressurehalf[i],
+
+                        rhalf[j],
+                        zhalf[j],
+                        u_rhalf[j],
+                        u_zhalf[j],
+                        rhohalf[j],
+                        pressurehalf[j],
+                        mass[j],
+
+                        h,
+                        kernel,
+
+                        drhodthalf[i],
+                        du_rdthalf[i],
+                        du_zdthalf[i]);
+                }
+                    /*double sr = rhalf[i]-rhalf[j];
                     double sz = zhalf[i]-zhalf[j];
 
                     double s2 = sr*sr+sz*sz;
@@ -1182,7 +1516,7 @@ int main ()
                     drhodthalf[i] += (1.0/(2*PI))*((mass[j]/rhalf[j])*(du_r*result.dWeightR+du_z*result.dWeightZ));                               
                     du_rdthalf[i] -= 2*PI*mass[j]*(((pressurehalf[i]*rhalf[i]+pressurehalf[j]*rhalf[j])/(2*PI*rhalf[i]*rhohalf[i]*2*PI*rhalf[j]*rhohalf[j]))+(Piij/(2*PI)))*result.dWeightR;
                     du_zdthalf[i] -= 2*PI*mass[j]*(((pressurehalf[i]*rhalf[i]+pressurehalf[j]*rhalf[j])/(2*PI*rhalf[i]*rhohalf[i]*2*PI*rhalf[j]*rhohalf[j]))+(Piij/(2*PI)))*result.dWeightZ;
-                }
+                }*/
 
 
 

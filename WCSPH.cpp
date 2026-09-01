@@ -332,6 +332,109 @@ bool solveLinear2(double A[][3], double b[], double X[], int n)
 }
 
 
+// --------------------------------------------------
+// Compute the interaction between particle i and j
+// --------------------------------------------------
+void accumulateInteraction(
+    int i,
+    double xj,
+    double yj,
+    double uj,
+    double vj,
+    double rhoj,
+    double pj,
+    double mj,
+    double h,
+    string kernel)
+{
+    double rx = x[i] - xj;
+    double ry = y[i] - yj;
+
+    double r2 = rx*rx + ry*ry;
+
+    if ((kernel == "cubic" ||
+         kernel == "wendland")
+        && r2 > 4.0*h*h)
+    {
+        return;
+    }
+
+    if (r2 < 1e-14)
+    {
+        return;
+    }
+
+    double r = sqrt(r2);
+    double q = r/h;
+
+    double dirX = rx/r;
+    double dirY = ry/r;
+
+    KernelResult result;
+
+    if (kernel == "gaussian")
+    {
+        result = gaussian(q,h,dirX,dirY);
+    }
+    else if (kernel == "cubic")
+    {
+        result = cubicSpline(q,h,dirX,dirY);
+    }
+    else
+    {
+        result = Wendland(q,h,dirX,dirY);
+    }
+
+    double du =
+        u[i] - uj;
+
+    double dv =
+        v[i] - vj;
+
+    double vijrij =
+        du*rx + dv*ry;
+
+    double Piij = 0.0;
+
+    if (vijrij < 0.0)
+    {
+        double muij =
+            h*vijrij /
+            (r2 + 0.01*h*h);
+
+        double rhoij =
+            0.5*(rho[i] + rhoj);
+
+        Piij =
+            -alphaAV*c0*muij/rhoij;
+    }
+
+
+    // ---------------------------------------------------------
+    // Continuity SPH part
+    // ---------------------------------------------------------
+
+    double difussionX = 2*(rho[i]-rhoj)*(rx/r2);
+    double difussionY = 2*(rho[i]-rhoj)*(ry/r2);
+
+
+    drhodt[i] += ((du*result.dWeightX+dv*result.dWeightY)*mass)+(deltadifussion*h*c0*(mass/rhoj)*(difussionX*result.dWeightX+difussionY*result.dWeightY));
+
+
+    // ---------------------------------------------------------
+    // Radial momentum SPH part
+    // ---------------------------------------------------------
+
+    dudt[i] -= mass*(((pressure[i]+pj)/(rho[i]*rhoj))+Piij)*result.dWeightX;
+
+
+    // ---------------------------------------------------------
+    // Vertical momentum SPH part
+    // ---------------------------------------------------------
+
+    dvdt[i] -= mass*(((pressure[i]+pj)/(rho[i]*rhoj))+Piij)*result.dWeightY;
+};
+
 
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1165,6 +1268,7 @@ int main ()
 
                 for (int j = 0; j < Nparticles; j++)
                 {
+                   
 
                     double rx = xhalf[i]-xhalf[j];
                     double ry = yhalf[i]-yhalf[j];
