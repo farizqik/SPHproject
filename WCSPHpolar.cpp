@@ -96,8 +96,8 @@ const int boundpart = 0;
 const double c0 = 10.0*sqrt(g*(waterheight));
 
 
-const double gamma = 7.0;
-const double B = c0*c0*rho0/gamma;
+const double gammaEOS = 7.0;
+const double B = c0*c0*rho0/gammaEOS;
 
 const double alphaAV = 0.01;
 
@@ -397,8 +397,8 @@ int main ()
         cout << "h/dp : " << h/dp << endl;
         string foldername = 
             "WCSPHpolar_dp_" + to_string(dp) + "_h_" + to_string(h) + "_Nparticles_" + to_string(Nparticles) + "_" + kernel; 
-        //system(("mkdir -p " + foldername).c_str());
-        std::filesystem::create_directories(foldername);
+        system(("mkdir -p " + foldername).c_str());
+        //std::filesystem::create_directories(foldername);
 
         r.resize(Nparticles);
         z.resize(Nparticles);
@@ -546,12 +546,12 @@ int main ()
             u_r[i] = 0.0;
             u_z[i] = 0.0;
             
-            rho[i] = rho0;
+            //rho[i] = rho0;
 
             // Exact hydrostatic initial density for the Tait EOS used here.
             // It satisfies dp/dy = -rho*g in the continuum.
-            //double depth = max(0.0, waterheight - z[i]);
-            //rho[i] = rho0 * pow(1.0 + (gamma - 1.0)*g*depth/(c0*c0), 1.0/(gamma - 1.0));
+            double depth = max(0.0, waterheight - z[i]);
+            rho[i] = rho0 * pow(1.0 + (gammaEOS - 1.0)*g*depth/(c0*c0), 1.0/(gammaEOS - 1.0));
             
             i++;
 
@@ -662,24 +662,24 @@ int main ()
 
                                       
                     
-                    double Vj = mass[j]/rho[j];
+                    double Aj = mass[j]/(2*PI*r[j]*rho[j]);
 
-                    shepardNumerator += rho[j] * result.Weight * Vj;
-                    shepardDenominator += result.Weight * Vj;
+                    shepardNumerator += rho[j] * result.Weight * Aj;
+                    shepardDenominator += result.Weight * Aj;
 
 
                     double dA[n][n] = 
                     {
-                        {result.Weight*Vj, result.Weight*Vj*(-sr), result.Weight*Vj*(-sz)},
-                        {result.dWeightR*Vj, result.dWeightR*Vj*(-sr), result.dWeightR*Vj*(-sz)},
-                        {result.dWeightZ*Vj, result.dWeightZ*Vj*(-sr), result.dWeightZ*Vj*(-sz)}
+                        {result.Weight*Aj, result.Weight*Aj*(-sr), result.Weight*Aj*(-sz)},
+                        {result.dWeightR*Aj, result.dWeightR*Aj*(-sr), result.dWeightR*Aj*(-sz)},
+                        {result.dWeightZ*Aj, result.dWeightZ*Aj*(-sr), result.dWeightZ*Aj*(-sz)}
                     };
                     
                     double db[n] = 
                     {
-                        result.Weight*mass[j],
-                        result.dWeightR*mass[j],
-                        result.dWeightZ*mass[j]
+                        result.Weight*rho[j]*Aj,
+                        result.dWeightR*rho[j]*Aj,
+                        result.dWeightZ*rho[j]*Aj
                     };
 
                     
@@ -746,14 +746,14 @@ int main ()
             
             for (int i = 0; i < Nparticles; i++)
             {
-                pressure[i] = B*(pow(rho[i]/rho0,gamma)-1.0);                            
+                pressure[i] = B*(pow(rho[i]/rho0,gammaEOS)-1.0);                            
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Kinetic Energy
 // -----------------------------------------------------------------------------------------------------------------------------
             double KE = 0.0;
-            for (int i = 0; i < Nparticles; i++)
+            for (int i = Nboundary; i < Nparticles; i++)
             {
                 if (z[i]<-boundthick)
                 {
@@ -1010,24 +1010,24 @@ int main ()
 
                                       
                     
-                    double Vj = mass[j]/rhohalf[j];
+                    double Aj = mass[j]/(2*PI*rhalf[j]*rhohalf[j]);
 
-                    shepardNumerator += rhohalf[j] * result.Weight * Vj;
-                    shepardDenominator += result.Weight * Vj;
+                    shepardNumerator += rhohalf[j] * result.Weight * Aj;
+                    shepardDenominator += result.Weight * Aj;
 
 
                     double dA[n][n] = 
                     {
-                        {result.Weight*Vj, result.Weight*Vj*(-sr), result.Weight*Vj*(-sz)},
-                        {result.dWeightR*Vj, result.dWeightR*Vj*(-sr), result.dWeightR*Vj*(-sz)},
-                        {result.dWeightZ*Vj, result.dWeightZ*Vj*(-sr), result.dWeightZ*Vj*(-sz)}
+                        {result.Weight*Aj, result.Weight*Aj*(-sr), result.Weight*Aj*(-sz)},
+                        {result.dWeightR*Aj, result.dWeightR*Aj*(-sr), result.dWeightR*Aj*(-sz)},
+                        {result.dWeightZ*Aj, result.dWeightZ*Aj*(-sr), result.dWeightZ*Aj*(-sz)}
                     };
                     
                     double db[n] = 
                     {
-                        result.Weight*mass[j],
-                        result.dWeightR*mass[j],
-                        result.dWeightZ*mass[j]
+                        result.Weight*rhohalf[j]*Aj,
+                        result.dWeightR*rhohalf[j]*Aj,
+                        result.dWeightZ*rhohalf[j]*Aj
                     };
 
                     
@@ -1084,7 +1084,7 @@ int main ()
                 }
 
 
-            rhohalf[i] = rhoghost[i]+drhoghostR[i]*(r[i]-rghost[i])+drhoghostZ[i]*(zhalf[i]-zghost[i]);    
+            rhohalf[i] = rhoghost[i]+drhoghostR[i]*(rhalf[i]-rghost[i])+drhoghostZ[i]*(zhalf[i]-zghost[i]);    
             }
 
 
@@ -1096,7 +1096,7 @@ int main ()
             
             for (int i = 0; i < Nparticles; i++)
             {
-                pressurehalf[i] = B*(pow(rhohalf[i]/rho0,gamma)-1.0);                            
+                pressurehalf[i] = B*(pow(rhohalf[i]/rho0,gammaEOS)-1.0);                            
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1180,8 +1180,8 @@ int main ()
 
 
                     drhodthalf[i] += (1.0/(2*PI))*((mass[j]/rhalf[j])*(du_r*result.dWeightR+du_z*result.dWeightZ));                               
-                    du_rdthalf[i] += 2*PI*mass[j]*(((pressurehalf[i]*rhalf[i]+pressurehalf[j]*rhalf[j])/(2*PI*rhalf[i]*rhohalf[i]*2*PI*rhalf[j]*rhohalf[j]))+(Piij/(2*PI)))*result.dWeightR;
-                    du_zdthalf[i] += 2*PI*mass[j]*(((pressurehalf[i]*rhalf[i]+pressurehalf[j]*rhalf[j])/(2*PI*rhalf[i]*rhohalf[i]*2*PI*rhalf[j]*rhohalf[j]))+(Piij/(2*PI)))*result.dWeightZ;
+                    du_rdthalf[i] -= 2*PI*mass[j]*(((pressurehalf[i]*rhalf[i]+pressurehalf[j]*rhalf[j])/(2*PI*rhalf[i]*rhohalf[i]*2*PI*rhalf[j]*rhohalf[j]))+(Piij/(2*PI)))*result.dWeightR;
+                    du_zdthalf[i] -= 2*PI*mass[j]*(((pressurehalf[i]*rhalf[i]+pressurehalf[j]*rhalf[j])/(2*PI*rhalf[i]*rhohalf[i]*2*PI*rhalf[j]*rhohalf[j]))+(Piij/(2*PI)))*result.dWeightZ;
                 }
 
 

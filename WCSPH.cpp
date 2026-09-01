@@ -449,8 +449,8 @@ int main ()
         cout << "h/dp : " << h/dp << endl;
         string foldername = 
             "WCSPH_dp_" + to_string(dp) + "_h_" + to_string(h) + "_Nparticles_" + to_string(Nparticles) + "_" + kernel; 
-        //system(("mkdir -p " + foldername).c_str());
-        std::filesystem::create_directories(foldername);
+        system(("mkdir -p " + foldername).c_str());
+        //std::filesystem::create_directories(foldername);
 
         x.resize(Nparticles);
         y.resize(Nparticles);
@@ -801,7 +801,7 @@ int main ()
 // Compute Kinetic Energy
 // -----------------------------------------------------------------------------------------------------------------------------
             double KE = 0.0;
-            for (int i = 0; i < Nparticles; i++)
+            for (int i = Nboundary; i < Nparticles; i++)
             {
                 if (y[i]<-boundthick)
                 {
@@ -1135,7 +1135,7 @@ int main ()
                 }
 
 
-            rhohalf[i] = rhoghost[i]+drhoghostX[i]*(x[i]-xghost[i])+drhoghostY[i]*(yhalf[i]-yghost[i]);    
+            rhohalf[i] = rhoghost[i]+drhoghostX[i]*(xhalf[i]-xghost[i])+drhoghostY[i]*(yhalf[i]-yghost[i]);    
             }
 
 
