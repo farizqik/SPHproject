@@ -9,9 +9,9 @@ close all;
 simulationFolder = ...
     "WCSPH_dp_0.500000_h_1.000000_Nparticles_768_wendland";
 
- plotVariable = "pressure";
+% plotVariable = "pressure";
 % plotVariable = "density";
-% plotVariable = "velocity";
+ plotVariable = "velocity";
 
 saveVideo = true;
 

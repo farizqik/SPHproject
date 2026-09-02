@@ -95,8 +95,8 @@ const int boundpart = 0;
 const double c0 = 10.0*sqrt(g*(waterheight));
 const double mass = rho0*dp*dp;
 
-const double gamma = 7.0;
-const double B = c0*c0*rho0/gamma;
+const double gammaEOS = 7.0;
+const double B = c0*c0*rho0/gammaEOS;
 
 const double alphaAV = 0.01;
 
@@ -337,24 +337,26 @@ bool solveLinear2(double A[][3], double b[], double X[], int n)
 // --------------------------------------------------
 void accumulateInteraction(
     int i,
-    double xj,
-    double yj,
-    double uj,
-    double vj,
-    double rhoj,
-    double pj,
+    int j,
+    const vector<double>& xs,
+    const vector<double>& ys,
+    const vector<double>& us,
+    const vector<double>& vs,
+    const vector<double>& rhos,
+    const vector<double>& ps,
     double mj,
     double h,
-    string kernel)
+    const string& kernel,
+    double& drhoAcc,
+    double& duAcc,
+    double& dvAcc)
 {
-    double rx = x[i] - xj;
-    double ry = y[i] - yj;
-
+    double rx = xs[i] - xs[j];
+    double ry = ys[i] - ys[j];
     double r2 = rx*rx + ry*ry;
 
-    if ((kernel == "cubic" ||
-         kernel == "wendland")
-        && r2 > 4.0*h*h)
+    if ((kernel == "cubic" || kernel == "wendland") &&
+        r2 > 4.0*h*h)
     {
         return;
     }
@@ -366,76 +368,262 @@ void accumulateInteraction(
 
     double r = sqrt(r2);
     double q = r/h;
-
     double dirX = rx/r;
     double dirY = ry/r;
 
     KernelResult result;
 
     if (kernel == "gaussian")
-    {
-        result = gaussian(q,h,dirX,dirY);
-    }
+        result = gaussian(q, h, dirX, dirY);
     else if (kernel == "cubic")
-    {
-        result = cubicSpline(q,h,dirX,dirY);
-    }
+        result = cubicSpline(q, h, dirX, dirY);
+    else if (kernel == "wendland")
+        result = Wendland(q, h, dirX, dirY);
     else
-    {
-        result = Wendland(q,h,dirX,dirY);
-    }
+        return;
 
-    double du =
-        u[i] - uj;
+    double du = us[i] - us[j];
+    double dv = vs[i] - vs[j];
 
-    double dv =
-        v[i] - vj;
-
-    double vijrij =
-        du*rx + dv*ry;
-
+    double vijrij = du*rx + dv*ry;
     double Piij = 0.0;
 
     if (vijrij < 0.0)
     {
         double muij =
-            h*vijrij /
-            (r2 + 0.01*h*h);
+            h*vijrij/(r2 + 0.01*h*h);
 
         double rhoij =
-            0.5*(rho[i] + rhoj);
+            0.5*(rhos[i] + rhos[j]);
 
         Piij =
             -alphaAV*c0*muij/rhoij;
     }
 
+    double diffusionX =
+        2.0*(rhos[i] - rhos[j])*rx/r2;
 
-    // ---------------------------------------------------------
-    // Continuity SPH part
-    // ---------------------------------------------------------
+    double diffusionY =
+        2.0*(rhos[i] - rhos[j])*ry/r2;
 
-    double difussionX = 2*(rho[i]-rhoj)*(rx/r2);
-    double difussionY = 2*(rho[i]-rhoj)*(ry/r2);
+    drhoAcc +=
+        mj*(du*result.dWeightX +
+            dv*result.dWeightY)
+        +
+        deltadifussion*h*c0*(mj/rhos[j])*
+        (diffusionX*result.dWeightX +
+         diffusionY*result.dWeightY);
 
+    double pressureTerm =
+        (ps[i] + ps[j])/(rhos[i]*rhos[j])
+        + Piij;
 
-    drhodt[i] += ((du*result.dWeightX+dv*result.dWeightY)*mass)+(deltadifussion*h*c0*(mass/rhoj)*(difussionX*result.dWeightX+difussionY*result.dWeightY));
-
-
-    // ---------------------------------------------------------
-    // Radial momentum SPH part
-    // ---------------------------------------------------------
-
-    dudt[i] -= mass*(((pressure[i]+pj)/(rho[i]*rhoj))+Piij)*result.dWeightX;
-
-
-    // ---------------------------------------------------------
-    // Vertical momentum SPH part
-    // ---------------------------------------------------------
-
-    dvdt[i] -= mass*(((pressure[i]+pj)/(rho[i]*rhoj))+Piij)*result.dWeightY;
-};
+    duAcc -= mj*pressureTerm*result.dWeightX;
+    dvAcc -= mj*pressureTerm*result.dWeightY;
+}
 
 
+// --------------------------------------------------
+// Compute mDBC interpolation for a ghost particle
+// --------------------------------------------------
+
+void interpolateMDBC(
+    int i,
+    int Nboundary,
+    int Nparticles,
+
+    const vector<double>& xState,
+    const vector<double>& yState,
+    const vector<double>& rhoState,
+
+    const vector<double>& xGhost,
+    const vector<double>& yGhost,
+
+    double particleMass,
+    double h,
+    const string& kernel,
+
+    double& rhoGhostOut,
+    double& drhoGhostXOut,
+    double& drhoGhostYOut,
+    double& rhoBoundaryOut)
+{
+    const int matrixSize = 3;
+
+    double A[matrixSize][matrixSize] = {0};
+    double b[matrixSize] = {0};
+    double X[matrixSize];
+
+    int neighborCount = 0;
+
+    double shepardNumerator   = 0.0;
+    double shepardDenominator = 0.0;
+
+    for (int j = Nboundary; j < Nparticles; j++)
+    {
+        double rx = xGhost[i] - xState[j];
+        double ry = yGhost[i] - yState[j];
+
+        double r2 = rx*rx + ry*ry;
+
+        if ((kernel == "cubic" || kernel == "wendland") &&
+            r2 > 4.0*h*h)
+        {
+            continue;
+        }
+
+        if (r2 < 1e-14)
+        {
+            continue;
+        }
+
+        double distance = sqrt(r2);
+        double q = distance/h;
+
+        /*
+        A fluid particle can coincide exactly with the ghost point.
+        Its kernel weight should still be included. At distance = 0,
+        the kernel gradient is zero.
+        */
+
+        double dirX = rx/distance;
+        double dirY = ry/distance;
+
+        KernelResult result;
+
+        if (kernel == "gaussian")
+        {
+            result = gaussian(q, h, dirX, dirY);
+        }
+        else if (kernel == "cubic")
+        {
+            result = cubicSpline(q, h, dirX, dirY);
+        }
+        else if (kernel == "wendland")
+        {
+            result = Wendland(q, h, dirX, dirY);
+        }
+        else
+        {
+            throw invalid_argument(
+                "Kernel must be gaussian, cubic, or wendland.");
+        }
+
+        if (abs(result.Weight) < 1e-14)
+        {
+            continue;
+        }
+
+        if (!isfinite(rhoState[j]) ||
+            rhoState[j] <= 0.0)
+        {
+            continue;
+        }
+
+        neighborCount++;
+
+        double Vj =
+            particleMass/rhoState[j];
+
+        // Shepard interpolation
+        shepardNumerator +=
+            rhoState[j]*result.Weight*Vj;
+
+        shepardDenominator +=
+            result.Weight*Vj;
+
+        // Contribution to the mDBC correction matrix
+        double dA[matrixSize][matrixSize] =
+        {
+            {
+                result.Weight*Vj,
+                result.Weight*Vj*(-rx),
+                result.Weight*Vj*(-ry)
+            },
+            {
+                result.dWeightX*Vj,
+                result.dWeightX*Vj*(-rx),
+                result.dWeightX*Vj*(-ry)
+            },
+            {
+                result.dWeightY*Vj,
+                result.dWeightY*Vj*(-rx),
+                result.dWeightY*Vj*(-ry)
+            }
+        };
+
+        // Right-hand-side contribution
+        double db[matrixSize] =
+        {
+            result.Weight*particleMass,
+            result.dWeightX*particleMass,
+            result.dWeightY*particleMass
+        };
+
+        for (int row = 0; row < matrixSize; row++)
+        {
+            for (int column = 0;
+                 column < matrixSize;
+                 column++)
+            {
+                A[row][column] +=
+                    dA[row][column];
+            }
+
+            b[row] += db[row];
+        }
+    }
+
+    const int minMdbcNeighbors = 4;
+    const double dryTolerance = 1e-12;
+    const double supportTolerance = 0.4;
+
+    bool hasFluid =
+        shepardDenominator > dryTolerance;
+
+    bool hasGoodSupport =
+        shepardDenominator > supportTolerance;
+
+    bool solved = false;
+
+    if (hasGoodSupport &&
+        neighborCount >= minMdbcNeighbors)
+    {
+        solved =
+            solveLinear2(A, b, X, matrixSize);
+    }
+
+    if (!hasFluid)
+    {
+        // Dry boundary region
+        rhoGhostOut   = rho0;
+        drhoGhostXOut = 0.0;
+        drhoGhostYOut = 0.0;
+    }
+    else if (solved)
+    {
+        // First-order mDBC reconstruction
+        rhoGhostOut   = X[0];
+        drhoGhostXOut = X[1];
+        drhoGhostYOut = X[2];
+    }
+    else
+    {
+        // Shepard-filter fallback
+        rhoGhostOut =
+            shepardNumerator/shepardDenominator;
+
+        drhoGhostXOut = 0.0;
+        drhoGhostYOut = 0.0;
+    }
+
+    rhoBoundaryOut =
+        rhoGhostOut
+        + drhoGhostXOut*
+          (xState[i] - xGhost[i])
+        + drhoGhostYOut*
+          (yState[i] - yGhost[i]);
+}
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -704,7 +892,7 @@ int main ()
             // Exact hydrostatic initial density for the Tait EOS used here.
             // It satisfies dp/dy = -rho*g in the continuum.
             //double depth = max(0.0, waterheight - y[i]);
-            //rho[i] = rho0 * pow(1.0 + (gamma - 1.0)*g*depth/(c0*c0), 1.0/(gamma - 1.0));
+            //rho[i] = rho0 * pow(1.0 + (gammaEOS - 1.0)*g*depth/(c0*c0), 1.0/(gammaEOS - 1.0));
             
             i++;
 
@@ -744,7 +932,29 @@ int main ()
                 dudt[i] = 0.0;
                 dvdt[i] = 0.0;
 
-                const int n = 3;
+                interpolateMDBC(
+                    i,
+                    Nboundary,
+                    Nparticles,
+
+                    x,
+                    y,
+                    rho,
+
+                    xghost,
+                    yghost,
+
+                    mass,
+                    h,
+                    kernel,
+
+                    rhoghost[i],
+                    drhoghostX[i],
+                    drhoghostY[i],
+                    rho[i]);
+            }
+
+                /*const int n = 3;
 
                 double A[n][n]={0};
                 double b[n]={0};
@@ -888,7 +1098,7 @@ int main ()
 
 
             rho[i] = rhoghost[i]+drhoghostX[i]*(x[i]-xghost[i])+drhoghostY[i]*(y[i]-yghost[i]);    
-            }
+            }*/
             
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -897,7 +1107,7 @@ int main ()
             
             for (int i = 0; i < Nparticles; i++)
             {
-                pressure[i] = B*(pow(rho[i]/rho0,gamma)-1.0);                            
+                pressure[i] = B*(pow(rho[i]/rho0,gammaEOS)-1.0);                            
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -929,8 +1139,14 @@ int main ()
 
                 for (int j = 0; j < Nparticles; j++)
                 {
+                    accumulateInteraction(
+                        i, j,
+                        x, y, u, v, rho, pressure,
+                        mass, h, kernel,
+                        drhodt[i], dudt[i], dvdt[i]);
+                }
 
-                    double rx = x[i]-x[j];
+                    /*double rx = x[i]-x[j];
                     double ry = y[i]-y[j];
 
                     double r2 = rx*rx+ry*ry;
@@ -1002,7 +1218,7 @@ int main ()
                     
                     dudt[i] += -mass*(((pressure[i]+pressure[j])/(rho[i]*rho[j]))+Piij)*result.dWeightX;
                     dvdt[i] += -mass*(((pressure[i]+pressure[j])/(rho[i]*rho[j]))+Piij)*result.dWeightY;
-                }
+                }*/
 
             }
 
@@ -1095,7 +1311,29 @@ int main ()
                 dudthalf[i] = 0.0;
                 dvdthalf[i] = 0.0;
 
-                const int n = 3;
+                interpolateMDBC(
+                    i,
+                    Nboundary,
+                    Nparticles,
+
+                    xhalf,
+                    yhalf,
+                    rhohalf,
+
+                    xghost,
+                    yghost,
+
+                    mass,
+                    h,
+                    kernel,
+
+                    rhoghost[i],
+                    drhoghostX[i],
+                    drhoghostY[i],
+                    rhohalf[i]);
+            }
+
+                /*const int n = 3;
 
                 double A[n][n]={0};
                 double b[n]={0};
@@ -1239,7 +1477,7 @@ int main ()
 
 
             rhohalf[i] = rhoghost[i]+drhoghostX[i]*(xhalf[i]-xghost[i])+drhoghostY[i]*(yhalf[i]-yghost[i]);    
-            }
+            }*/
 
 
 
@@ -1250,7 +1488,7 @@ int main ()
             
             for (int i = 0; i < Nparticles; i++)
             {
-                pressurehalf[i] = B*(pow(rhohalf[i]/rho0,gamma)-1.0);                            
+                pressurehalf[i] = B*(pow(rhohalf[i]/rho0,gammaEOS)-1.0);                            
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1268,9 +1506,20 @@ int main ()
 
                 for (int j = 0; j < Nparticles; j++)
                 {
+
+                    accumulateInteraction(
+                        i, j,
+                        xhalf, yhalf,
+                        uhalf, vhalf,
+                        rhohalf, pressurehalf,
+                        mass, h, kernel,
+                        drhodthalf[i],
+                        dudthalf[i],
+                        dvdthalf[i]);
+                }
                    
 
-                    double rx = xhalf[i]-xhalf[j];
+                    /*double rx = xhalf[i]-xhalf[j];
                     double ry = yhalf[i]-yhalf[j];
 
                     double r2 = rx*rx+ry*ry;
@@ -1342,7 +1591,7 @@ int main ()
                     
                     dudthalf[i] += -mass*(((pressurehalf[i]+pressurehalf[j])/(rhohalf[i]*rhohalf[j]))+Piij)*result.dWeightX;
                     dvdthalf[i] += -mass*(((pressurehalf[i]+pressurehalf[j])/(rhohalf[i]*rhohalf[j]))+Piij)*result.dWeightY;
-                }
+                }*/
 
 
             }

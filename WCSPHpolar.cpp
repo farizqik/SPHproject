@@ -103,7 +103,7 @@ const double alphaAV = 0.01;
 
 
 //set deltadifussion = 0.0 if it's not considered
-const double deltadifussion = 0.1;
+const double deltadifussion = 0.0;
 
 
 
@@ -387,34 +387,33 @@ void accumulateAxisymmetricInteraction(
     // Axisymmetric continuity equation
     // ---------------------------------------------------------
 
+    double diffusionR =
+        2.0*(rhoi - rhoj)*sr/s2;
+
+    double diffusionZ =
+        2.0*(rhoi - rhoj)*sz/s2;
+
     drhoAcc +=
-        (1.0/(2.0*PI)) *
-        (mj/rj) *
-        (
-            du_r*result.dWeightR +
-            du_z*result.dWeightZ
-        );
+        ((1.0/(2.0*PI))*(mj/rj) *(du_r*result.dWeightR +du_z*result.dWeightZ))+(deltadifussion*h*c0*(mj / (2.0*PI*rj*rhoj))*
+        (diffusionR*result.dWeightR +
+         diffusionZ*result.dWeightZ));
 
     // ---------------------------------------------------------
     // Common pressure and viscosity coefficient
     // ---------------------------------------------------------
 
     double pressureTerm =
-        (pi*ri + pj*rj) /
-        (
-            (2.0*PI*ri*rhoi) *
-            (2.0*PI*rj*rhoj)
-        );
+        (pi*ri + pj*rj) /((2.0*PI*ri*rhoi)*(2.0*PI*rj*rhoj));
 
     double interactionTerm =
-        pressureTerm + Piij/(2.0*PI);
+        pressureTerm*mj + Piij*abs(mj)/(2.0*PI);
 
     // ---------------------------------------------------------
     // Radial momentum equation
     // ---------------------------------------------------------
 
     durAcc -=
-        2.0*PI*mj*interactionTerm*
+        2.0*PI*interactionTerm*
         result.dWeightR;
 
     // ---------------------------------------------------------
@@ -422,9 +421,337 @@ void accumulateAxisymmetricInteraction(
     // ---------------------------------------------------------
 
     duzAcc -=
-        2.0*PI*mj*interactionTerm*
+        2.0*PI*interactionTerm*
         result.dWeightZ;
 }
+
+// --------------------------------------------------
+// Accumulate  mDBC Neighbor for a ghost particle
+// --------------------------------------------------
+
+
+void accumulateMDBCNeighbor(
+    int i,
+
+    // Properties of ONE neighbour j
+    double rj,
+    double zj,
+    double rhoj,
+    double mj,
+
+    // mDBC ghost-point locations
+    const vector<double>& rGhost,
+    const vector<double>& zGhost,
+
+    // SPH settings
+    double h,
+    const string& kernel,
+
+    // Accumulators
+    double A[][3],
+    double b[],
+    double& shepardNumerator,
+    double& shepardDenominator,
+    int& neighborCount)
+{
+    const int matrixSize = 3;
+
+    // ---------------------------------------------------------
+    // Distance from mDBC ghost point i to neighbour j
+    // ---------------------------------------------------------
+
+    double sr = rGhost[i] - rj;
+    double sz = zGhost[i] - zj;
+
+    double s2 = sr*sr + sz*sz;
+
+
+    // ---------------------------------------------------------
+    // Kernel support
+    // ---------------------------------------------------------
+
+    if ((kernel == "cubic" ||
+         kernel == "wendland") &&
+        s2 > 4.0*h*h)
+    {
+        return;
+    }
+
+
+    double distance = sqrt(s2);
+    double q = distance/h;
+
+    double dirR = 0.0;
+    double dirZ = 0.0;
+
+    if (distance > 1e-14)
+    {
+        dirR = sr/distance;
+        dirZ = sz/distance;
+    }
+
+
+    // ---------------------------------------------------------
+    // Evaluate kernel
+    // ---------------------------------------------------------
+
+    KernelResult result;
+
+    if (kernel == "gaussian")
+    {
+        result = gaussian(q,h,dirR,dirZ);
+    }
+
+    else if (kernel == "cubic")
+    {
+        result =cubicSpline(q,h,dirR,dirZ);
+    }
+
+    else if (kernel == "wendland")
+    {
+        result =Wendland(q,h,dirR,dirZ);
+    }
+
+    else
+    {
+        throw invalid_argument(
+            "Kernel must be gaussian, cubic, or wendland."
+        );
+    }
+
+
+    // Ignore numerically zero kernel contribution
+    if (abs(result.Weight) < 1e-14)
+    {
+        return;
+    }
+
+
+
+    double Aj = mj / (2.0*PI*rj*rhoj);
+
+
+    neighborCount++;
+
+
+    // ---------------------------------------------------------
+    // Shepard interpolation
+    // ---------------------------------------------------------
+
+    shepardNumerator +=
+        rhoj *
+        result.Weight *
+        Aj;
+
+    shepardDenominator +=
+        result.Weight *
+        Aj;
+
+
+    // ---------------------------------------------------------
+    // Contribution to mDBC correction matrix A
+    // ---------------------------------------------------------
+
+    double dA[matrixSize][matrixSize] =
+    {
+        {
+            result.Weight*Aj,
+            result.Weight*Aj*(-sr),
+            result.Weight*Aj*(-sz)
+        },
+
+        {
+            result.dWeightR*Aj,
+            result.dWeightR*Aj*(-sr),
+            result.dWeightR*Aj*(-sz)
+        },
+
+        {
+            result.dWeightZ*Aj,
+            result.dWeightZ*Aj*(-sr),
+            result.dWeightZ*Aj*(-sz)
+        }
+    };
+
+
+    // ---------------------------------------------------------
+    // Contribution to RHS b
+    // ---------------------------------------------------------
+
+    double db[matrixSize] =
+    {
+        result.Weight*rhoj*Aj,
+        result.dWeightR*rhoj*Aj,
+        result.dWeightZ*rhoj*Aj
+    };
+
+
+    // ---------------------------------------------------------
+    // Accumulate contribution
+    // ---------------------------------------------------------
+
+    for (int row = 0;
+         row < matrixSize;
+         row++)
+    {
+        for (int column = 0;
+             column < matrixSize;
+             column++)
+        {
+            A[row][column] +=
+                dA[row][column];
+        }
+
+        b[row] +=
+            db[row];
+    }
+}
+
+
+// --------------------------------------------------
+// Compute mDBC interpolation for a ghost particle
+// --------------------------------------------------
+
+void interpolateMDBC(
+    int i,
+    int Nboundary,
+    int Nparticles,
+
+    const vector<double>& rState,
+    const vector<double>& zState,
+    const vector<double>& rhoState,
+    
+
+    const vector<double>& rGhost,
+    const vector<double>& zGhost,
+
+    const vector<double>& massState,
+    double h,
+    const string& kernel,
+
+    double& rhoGhostOut,
+    double& drhoGhostROut,
+    double& drhoGhostZOut,
+    double& rhoBoundaryOut)
+{
+    const int matrixSize = 3;
+
+    double A[matrixSize][matrixSize] = {0};
+    double b[matrixSize] = {0};
+    double X[matrixSize];
+
+    int neighborCount = 0;
+
+    double shepardNumerator = 0.0;
+    double shepardDenominator = 0.0;
+
+    for (int j = Nboundary; j < Nparticles; j++)
+    {
+        // =========================================================
+        // REAL fluid particle
+        // =========================================================
+
+        accumulateMDBCNeighbor(
+            i,
+
+            rState[j],
+            zState[j],
+            rhoState[j],
+            massState[j],
+
+            rGhost,
+            zGhost,
+
+            h,
+            kernel,
+
+            A,
+            b,
+            shepardNumerator,
+            shepardDenominator,
+            neighborCount
+        );
+
+
+        // =========================================================
+        // MIRROR fluid particle
+        // =========================================================
+
+        if (abs(rGhost[i]) < 2.0*h)
+        {
+            accumulateMDBCNeighbor(
+                i,
+
+                -rState[j],       // r_m = -r_j
+                zState[j],       // z_m = z_j
+
+                rhoState[j],     // rho_m = rho_j
+
+                -massState[j],    // m_m = -m_j
+
+                rGhost,
+                zGhost,
+
+                h,
+                kernel,
+
+                A,
+                b,
+                shepardNumerator,
+                shepardDenominator,
+                neighborCount
+            );
+        }
+    }
+
+    const int minMdbcNeighbors = 4;
+    const double dryTolerance = 1e-12;
+    const double supportTolerance = 0.4;
+
+    bool hasFluid =
+        shepardDenominator > dryTolerance;
+
+    bool hasGoodSupport =
+        shepardDenominator > supportTolerance;
+
+    bool solved = false;
+
+    if (hasGoodSupport &&
+        neighborCount >= minMdbcNeighbors)
+    {
+        solved =
+            solveLinear(A, b, X, matrixSize);
+    }
+
+    if (!hasFluid)
+    {
+        rhoGhostOut = rho0;
+        drhoGhostROut = 0.0;
+        drhoGhostZOut = 0.0;
+    }
+    else if (solved)
+    {
+        rhoGhostOut = X[0];
+        drhoGhostROut = X[1];
+        drhoGhostZOut = X[2];
+    }
+    else
+    {
+        rhoGhostOut = shepardNumerator/shepardDenominator;
+        drhoGhostROut = 0.0;
+        drhoGhostZOut = 0.0;
+    }
+
+    rhoBoundaryOut =
+        rhoGhostOut
+        + drhoGhostROut*
+          (rState[i] - rGhost[i])
+        + drhoGhostZOut*
+          (zState[i] - zGhost[i]);
+}
+
+
+
 
 
 
@@ -466,7 +793,7 @@ int main ()
          rp < tankradius + boundthick;
          rp += dp)
     {
-        for (double zp = -boundthick; zp < tankheight; zp += dp)
+        for (double zp = -boundthick+0.5*dp; zp < tankheight; zp += dp)
         {
 
             cout << "ID: " << i
@@ -508,99 +835,7 @@ int main ()
     cout << "Boundary particles = " << Nboundary << endl;
     cout << "Fluid particles    = " << Nfluid << endl;
     cout << "Total particles    = " << Nparticles << endl;
-
-
-
-
-
-
-
-
-
-    /*int i = 0;
-
-    //Bottom Boundary Particles
-
-    for (double zp = -0.5*dp; zp > -boundthick; zp -= dp)
-    {
-        for (double rp = -boundthick+0.5*dp; rp < tankradius + boundthick + 0.5*dp; rp += dp)
-        {
-
-            cout << "ID: " << i
-             << "  Type: Boundary"
-             << "  x: " << rp
-             << "  y: " << zp
-             << endl;
-
-            i++;
-
-        }
-    }
-
-    // Left boundary
-    for (double rp = -0.5*dp; rp > -boundthick; rp -= dp)
-    {
-        for (double zp = 0.5*dp; zp < tankheight; zp += dp)
-        {
-
-            cout << "ID: " << i
-             << "  Type: Boundary"
-             << "  r: " << rp
-             << "  z: " << zp
-             << endl;
-
-            i++;
-        }
-    }
-
-    // Right boundary
-    for (double rp = tankradius + 0.5*dp;
-         rp < tankradius + boundthick;
-         rp += dp)
-    {
-        for (double zp = 0.5*dp; zp < tankheight; zp += dp)
-        {
-
-            cout << "ID: " << i
-             << "  Type: Boundary"
-             << "  x: " << rp
-             << "  y: " << zp
-             << endl;
-
-
-            i++;
-            
-        }
-    }
-
-    int Nboundary = i;
-
-    for (double rp = 0.5*dp; rp < waterradius; rp += dp)
-    {
-        for (double zp = 0.5*dp; zp < waterheight; zp += dp)
-        {
-
-            cout << "ID: " << i
-             << "  Type: Fluid"
-             << "  x: " << rp
-             << "  y: " << zp
-             << endl;
-
-            i++;
-
-        }
-    }
-
-    // Total number of particles
-    int Nparticles = i;
-
-    int Nfluid = Nparticles - Nboundary;
-
-    cout << endl;
-    cout << "Boundary particles = " << Nboundary << endl;
-    cout << "Fluid particles    = " << Nfluid << endl;
-    cout << "Total particles    = " << Nparticles << endl;*/
-    
+  
 
 
 
@@ -751,113 +986,9 @@ int main ()
         mass[i] = 2.0*PI*r[i]*rho[i]*dp*dp;
         drhodtexact[i] = -rho[i]*(0.0);
         pressureexact[i] = rho0*g*(waterheight-z[i]);                                
-    }
+    } 
 
-
-
-
-    /*int i = 0;
-
-    //Bottom Boundary Particles
-
-    for (double zp = -0.5*dp; zp > -boundthick; zp -= dp)
-    {
-        for (double rp = 0.5*dp; rp < tankradius + boundthick; rp += dp)
-        {
-
-            r[i] = rp;
-            z[i] = zp;
-
-            u_r[i] = 0.0;
-            u_z[i] = 0.0;
-
-            if (rp < 0)
-            {
-                rghost[i] = -r[i];
-                zghost[i] = -z[i];
-            }
-
-            else if (rp > tankradius)
-            {
-                rghost[i] = 2*tankradius-r[i];
-                zghost[i] = -z[i];
-            }
-
-            else
-            {
-                rghost[i] = r[i];
-                zghost[i] = -z[i];
-            }
-            
-            rho[i] = rho0;
-
-            i++;
-
-        }
-    }
-
-
-    // Right boundary
-    for (double rp = tankradius + 0.5*dp;
-         rp < tankradius + boundthick;
-         rp += dp)
-    {
-        for (double zp = 0.5*dp; zp < tankheight; zp += dp)
-        {
-
-            r[i] = rp;
-            z[i] = zp;
-
-            rghost[i] = 2*tankradius-r[i];
-            zghost[i] = z[i];
-
-            u_r[i] = 0.0;
-            u_z[i] = 0.0;
-
-            rho[i] = rho0;
-            
-            i++;
-            
-        }
-    }
-
-
-    for (double rp = 0.5*dp; rp < waterradius; rp += dp)
-    {
-        for (double zp = 0.5*dp; zp < waterheight; zp += dp)
-        {
-
-            r[i] = rp;
-            z[i] = zp;
-
-            u_r[i] = 0.0;
-            u_z[i] = 0.0;
-            
-            //rho[i] = rho0;
-
-            // Exact hydrostatic initial density for the Tait EOS used here.
-            // It satisfies dp/dy = -rho*g in the continuum.
-            double depth = max(0.0, waterheight - z[i]);
-            rho[i] = rho0 * pow(1.0 + (gammaEOS - 1.0)*g*depth/(c0*c0), 1.0/(gammaEOS - 1.0));
-            
-            i++;
-
-        }
-    }
-
-    for (int i = 0; i < Nparticles; i++)
-    {
-        mass[i] = 2.0*PI*r[i]*rho[i]*dp*dp;
-        drhodtexact[i] = -rho[i]*(0.0);
-        pressureexact[i] = rho0*g*(waterheight-z[i]);                                
-    }*/
-
-     
-
-
-
-
-        
+  
 // -----------------------------------------------------------------------------------------------------------------------------
 // start time loop
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -880,152 +1011,29 @@ int main ()
                 du_rdt[i] = 0.0;
                 du_zdt[i] = 0.0;
 
-                const int n = 3;
+                interpolateMDBC(
+                    i,
+                    Nboundary,
+                    Nparticles,
 
-                double A[n][n]={0};
-                double b[n]={0};
-                double X[n];
+                    r,
+                    z,
+                    rho,
 
-                int Nneighbor = 0;
+                    rghost,
+                    zghost,
 
-                // Shepard-filter fallback used when the mDBC correction matrix
-                // does not have sufficient / reliable fluid support.
-                double shepardNumerator = 0.0;
-                double shepardDenominator = 0.0;
+                    mass,
+                    h,
+                    kernel,
 
-                                
-
-                for (int j = Nboundary; j < Nparticles; j++)
-                {
-
-                    double sr = rghost[i]-r[j];
-                    double sz = zghost[i]-z[j];
-
-                    double s2 = sr*sr+sz*sz;
-
-                    if ((kernel == "cubic" || kernel == "wendland") && s2 > 4*h*h)
-                    {
-                        continue;
-                    }
-
-                    if (s2 < 1e-14)
-                    {
-                        continue;
-                    }
-                    
-                    double ds = sqrt(s2);
-                    double q = ds/h;
-
-                    double dirR = sr/ds;
-                    double dirZ = sz/ds;
-
-                    
-                    KernelResult result;
-
-                    if (kernel == "gaussian")
-                    {
-                        result = gaussian(q, h, dirR, dirZ);
-                    }
-                    else if (kernel == "cubic")
-                    {
-                        result = cubicSpline(q, h, dirR, dirZ);
-                    }
-                    else if (kernel == "wendland")
-                    {
-                        result = Wendland(q, h, dirR, dirZ);
-                    }
-                    else
-                    {
-                        cout << "Invalid kernel choice. Please choose 'gaussian', 'cubic', or 'wendland'." << endl;
-                        return 1; // Exit the program with an error code
-                    }
-
-                    if (abs(result.Weight) < 1e-14)
-                    {
-                        continue;
-                    }
-
-                    Nneighbor++;
-
-                                      
-                    
-                    double Aj = mass[j]/(2*PI*r[j]*rho[j]);
-
-                    shepardNumerator += rho[j] * result.Weight * Aj;
-                    shepardDenominator += result.Weight * Aj;
-
-
-                    double dA[n][n] = 
-                    {
-                        {result.Weight*Aj, result.Weight*Aj*(-sr), result.Weight*Aj*(-sz)},
-                        {result.dWeightR*Aj, result.dWeightR*Aj*(-sr), result.dWeightR*Aj*(-sz)},
-                        {result.dWeightZ*Aj, result.dWeightZ*Aj*(-sr), result.dWeightZ*Aj*(-sz)}
-                    };
-                    
-                    double db[n] = 
-                    {
-                        result.Weight*rho[j]*Aj,
-                        result.dWeightR*rho[j]*Aj,
-                        result.dWeightZ*rho[j]*Aj
-                    };
-
-                    
-
-                    for (int row = 0; row < 3; row++)
-                    {
-                        for (int col = 0; col < 3; col++)
-                        {
-                            A[row][col]+=dA[row][col];
-                            
-                        }
-                        b[row]+=db[row];
-                    }
-
-
-                }
-
-                // The mDBC formulation becomes unreliable with very low ghost support.
-                // Use at least four fluid neighbours and reject singular/nearly-singular solves.
-                const int minMdbcNeighbors = 4;
-                double drytolerance = 1e-12;
-                double supporttolerance = 0.4;
-
-
-                bool hasfluid = shepardDenominator > drytolerance;
-                bool goodsupport = shepardDenominator > supporttolerance;
-                
-                bool solved = false;
-
-
-                if (goodsupport && Nneighbor >= minMdbcNeighbors)
-                {
-                    solved = solveLinear(A, b, X, n);
-                }
-
-                if (!hasfluid)
-                {
-                    rhoghost[i] = rho0;
-                    drhoghostR[i] = 0.0;
-                    drhoghostZ[i] = 0.0;
-                }
-
-                else if (solved)
-                {
-                    rhoghost[i] = X[0];
-                    drhoghostR[i] = X[1];
-                    drhoghostZ[i] = X[2];
-                }
-                else
-                {                    
-                    rhoghost[i] = shepardNumerator / shepardDenominator;
-                    drhoghostR[i] = 0.0;
-                    drhoghostZ[i] = 0.0;
-                }
-
-
-            rho[i] = rhoghost[i]+drhoghostR[i]*(r[i]-rghost[i])+drhoghostZ[i]*(z[i]-zghost[i]);    
+                    rhoghost[i],
+                    drhoghostR[i],
+                    drhoghostZ[i],
+                    rho[i]);
             }
-            
+
+               
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Pressure at n
@@ -1065,8 +1073,8 @@ int main ()
 
                 for (int j = 0; j < Nparticles; j++)
                 {
-
-                     accumulateAxisymmetricInteraction(
+                    //real particle j
+                    accumulateAxisymmetricInteraction(
                         r[i],
                         z[i],
                         u_r[i],
@@ -1088,79 +1096,36 @@ int main ()
                         drhodt[i],
                         du_rdt[i],
                         du_zdt[i]);
-                }   
+
+                    //mirror particle j contribution
+                    if (r[i] < 2.0*h)
+                    {
+                        accumulateAxisymmetricInteraction(
+                            r[i],
+                            z[i],
+                            u_r[i],
+                            u_z[i],
+                            rho[i],
+                            pressure[i],
+
+                            -r[j],
+                            z[j],
+                            -u_r[j],
+                            u_z[j],
+                            rho[j],
+                            pressure[j],
+                            -mass[j],
+
+                            h,
+                            kernel,
+
+                            drhodt[i],
+                            du_rdt[i],
+                            du_zdt[i]);
+                    }
+                } 
                     
-                    /*double sr = r[i]-r[j];
-                    double sz = z[i]-z[j];
-
-                    double s2 = sr*sr+sz*sz;
-
-                    if ((kernel == "cubic" || kernel == "wendland") && s2 > 4*h*h)
-                    {
-                        continue;
-                    }
-
-                    if (s2 < 1e-14)
-                    {
-                        continue;
-                    }
-                    
-                    double ds = sqrt(s2);
-                    double q = ds/h;
-
-                    double dirR = sr/ds;
-                    double dirZ = sz/ds;
-
-                    double du_r = u_r[i]-u_r[j];
-                    double du_z = u_z[i]-u_z[j];
-
-                    double vijrij = du_r* sr+du_z* sz;
-
-                    double Piij = 0.0;
-
-                    
-
-                    //artificial viscosity
-                    if (vijrij<0.0)
-                    {
-                        double muij = h*vijrij/(ds*ds+0.01*h*h);
-                        double rhoij = 0.5*(rho[i]+rho[j]);
-                        Piij = -alphaAV*c0*muij/rhoij;
-                    }
-
-
-                    
-                    KernelResult result;
-
-                    if (kernel == "gaussian")
-                    {
-                        result = gaussian(q, h, dirR, dirZ);
-                    }
-                    else if (kernel == "cubic")
-                    {
-                        result = cubicSpline(q, h, dirR, dirZ);
-                    }
-                    else if (kernel == "wendland")
-                    {
-                        result = Wendland(q, h, dirR, dirZ);
-                    }
-                    else
-                    {
-                        cout << "Invalid kernel choice. Please choose 'gaussian', 'cubic', or 'wendland'." << endl;
-                        return 1; // Exit the program with an error code
-                    }
-
-                    double difussionR = 2*(rho[i]-rho[j])*(sr/s2);
-                    double difussionZ = 2*(rho[i]-rho[j])*(sz/s2);
-
-
-                    drhodt[i] += (1.0/(2*PI))*((mass[j]/r[j])*(du_r*result.dWeightR+du_z*result.dWeightZ));                 
-                    du_rdt[i] -= 2*PI*mass[j]*(((pressure[i]*r[i]+pressure[j]*r[j])/(2*PI*r[i]*rho[i]*2*PI*r[j]*rho[j]))+(Piij/(2*PI)))*result.dWeightR;
-                    du_zdt[i] -= 2*PI*mass[j]*(((pressure[i]*r[i]+pressure[j]*r[j])/(2*PI*r[i]*rho[i]*2*PI*r[j]*rho[j]))+(Piij/(2*PI)))*result.dWeightZ;
-                }*/
-
-
-
+                   
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1252,151 +1217,29 @@ int main ()
                 du_rdthalf[i] = 0.0;
                 du_zdthalf[i] = 0.0;
 
-                const int n = 3;
+                interpolateMDBC(
+                    i,
+                    Nboundary,
+                    Nparticles,
 
-                double A[n][n]={0};
-                double b[n]={0};
-                double X[n];
+                    rhalf,
+                    zhalf,
+                    rhohalf,
 
-                int Nneighbor = 0;
+                    rghost,
+                    zghost,
 
-                // Shepard-filter fallback used when the mDBC correction matrix
-                // does not have sufficient / reliable fluid support.
-                double shepardNumerator = 0.0;
-                double shepardDenominator = 0.0;
+                    mass,
+                    h,
+                    kernel,
 
-                                
-
-                for (int j = Nboundary; j < Nparticles; j++)
-                {
-
-                    double sr = rghost[i]-rhalf[j];
-                    double sz = zghost[i]-zhalf[j];
-
-                    double s2 = sr*sr+sz*sz;
-
-                    if ((kernel == "cubic" || kernel == "wendland") && s2 > 4*h*h)
-                    {
-                        continue;
-                    }
-
-                    if (s2 < 1e-14)
-                    {
-                        continue;
-                    }
-                    
-                    double ds = sqrt(s2);
-                    double q = ds/h;
-
-                    double dirR = sr/ds;
-                    double dirZ = sz/ds;
-
-                    
-                    KernelResult result;
-
-                    if (kernel == "gaussian")
-                    {
-                        result = gaussian(q, h, dirR, dirZ);
-                    }
-                    else if (kernel == "cubic")
-                    {
-                        result = cubicSpline(q, h, dirR, dirZ);
-                    }
-                    else if (kernel == "wendland")
-                    {
-                        result = Wendland(q, h, dirR, dirZ);
-                    }
-                    else
-                    {
-                        cout << "Invalid kernel choice. Please choose 'gaussian', 'cubic', or 'wendland'." << endl;
-                        return 1; // Exit the program with an error code
-                    }
-
-                    if (abs(result.Weight) < 1e-14)
-                    {
-                        continue;
-                    }
-
-                    Nneighbor++;
-
-                                      
-                    
-                    double Aj = mass[j]/(2*PI*rhalf[j]*rhohalf[j]);
-
-                    shepardNumerator += rhohalf[j] * result.Weight * Aj;
-                    shepardDenominator += result.Weight * Aj;
-
-
-                    double dA[n][n] = 
-                    {
-                        {result.Weight*Aj, result.Weight*Aj*(-sr), result.Weight*Aj*(-sz)},
-                        {result.dWeightR*Aj, result.dWeightR*Aj*(-sr), result.dWeightR*Aj*(-sz)},
-                        {result.dWeightZ*Aj, result.dWeightZ*Aj*(-sr), result.dWeightZ*Aj*(-sz)}
-                    };
-                    
-                    double db[n] = 
-                    {
-                        result.Weight*rhohalf[j]*Aj,
-                        result.dWeightR*rhohalf[j]*Aj,
-                        result.dWeightZ*rhohalf[j]*Aj
-                    };
-
-                    
-
-                    for (int row = 0; row < 3; row++)
-                    {
-                        for (int col = 0; col < 3; col++)
-                        {
-                            A[row][col]+=dA[row][col];
-                            
-                        }
-                        b[row]+=db[row];
-                    }
-
-
-                }
-
-                // The mDBC formulation becomes unreliable with very low ghost support.
-                // Use at least four fluid neighbours and reject singular/nearly-singular solves.
-                const int minMdbcNeighbors = 4;
-                double drytolerance = 1e-12;
-                double supporttolerance = 0.4;
-
-
-                bool hasfluid = shepardDenominator > drytolerance;
-                bool goodsupport = shepardDenominator > supporttolerance;
-                
-                bool solved = false;
-
-
-                if (goodsupport && Nneighbor >= minMdbcNeighbors)
-                {
-                    solved = solveLinear(A, b, X, n);
-                }
-
-                if (!hasfluid)
-                {
-                    rhoghost[i] = rho0;
-                    drhoghostR[i] = 0.0;
-                    drhoghostZ[i] = 0.0;
-                }
-
-                else if (solved)
-                {
-                    rhoghost[i] = X[0];
-                    drhoghostR[i] = X[1];
-                    drhoghostZ[i] = X[2];
-                }
-                else
-                {                    
-                    rhoghost[i] = shepardNumerator / shepardDenominator;
-                    drhoghostR[i] = 0.0;
-                    drhoghostZ[i] = 0.0;
-                }
-
-
-            rhohalf[i] = rhoghost[i]+drhoghostR[i]*(rhalf[i]-rghost[i])+drhoghostZ[i]*(zhalf[i]-zghost[i]);    
+                    rhoghost[i],
+                    drhoghostR[i],
+                    drhoghostZ[i],
+                    rhohalf[i]);
             }
+
+               
 
 
 
@@ -1425,7 +1268,7 @@ int main ()
 
                 for (int j = 0; j < Nparticles; j++)
                 {
-
+                    //real particle j
                     accumulateAxisymmetricInteraction(
                         rhalf[i],
                         zhalf[i],
@@ -1448,76 +1291,36 @@ int main ()
                         drhodthalf[i],
                         du_rdthalf[i],
                         du_zdthalf[i]);
+
+                    //mirror particle j contribution
+                    if (rhalf[i] < 2.0*h)
+                    {
+                        accumulateAxisymmetricInteraction(
+                            rhalf[i],
+                            zhalf[i],
+                            u_rhalf[i],
+                            u_zhalf[i],
+                            rhohalf[i],
+                            pressurehalf[i],
+
+                            -rhalf[j],
+                            zhalf[j],
+                            -u_rhalf[j],
+                            u_zhalf[j],
+                            rhohalf[j],
+                            pressurehalf[j],
+                            -mass[j],
+
+                            h,
+                            kernel,
+
+                            drhodthalf[i],
+                            du_rdthalf[i],
+                            du_zdthalf[i]);
+
+                        }
                 }
-                    /*double sr = rhalf[i]-rhalf[j];
-                    double sz = zhalf[i]-zhalf[j];
-
-                    double s2 = sr*sr+sz*sz;
-
-                    if ((kernel == "cubic" || kernel == "wendland") && s2 > 4*h*h)
-                    {
-                        continue;
-                    }
-
-                    if (s2 < 1e-14)
-                    {
-                        continue;
-                    }
-                    
-                    double ds = sqrt(s2);
-                    double q = ds/h;
-
-                    double dirR = sr/ds;
-                    double dirZ = sz/ds;
-
-                    double du_r = u_rhalf[i]-u_rhalf[j];
-                    double du_z = u_zhalf[i]-u_zhalf[j];
-
-                    double vijrij = du_r* sr+du_z* sz;
-
-                    double Piij = 0.0;
-
-                    
-
-                    //artificial viscosity
-                    if (vijrij<0.0)
-                    {
-                        double muij = h*vijrij/(ds*ds+0.01*h*h);
-                        double rhoij = 0.5*(rhohalf[i]+rhohalf[j]);
-                        Piij = -alphaAV*c0*muij/rhoij;
-                    }
-
-
-                    
-                    KernelResult result;
-
-                    if (kernel == "gaussian")
-                    {
-                        result = gaussian(q, h, dirR, dirZ);
-                    }
-                    else if (kernel == "cubic")
-                    {
-                        result = cubicSpline(q, h, dirR, dirZ);
-                    }
-                    else if (kernel == "wendland")
-                    {
-                        result = Wendland(q, h, dirR, dirZ);
-                    }
-                    else
-                    {
-                        cout << "Invalid kernel choice. Please choose 'gaussian', 'cubic', or 'wendland'." << endl;
-                        return 1; // Exit the program with an error code
-                    }
-
-                    double difussionR = 2*(rhohalf[i]-rhohalf[j])*(sr/s2);
-                    double difussionZ = 2*(rhohalf[i]-rhohalf[j])*(sz/s2);
-
-
-                    drhodthalf[i] += (1.0/(2*PI))*((mass[j]/rhalf[j])*(du_r*result.dWeightR+du_z*result.dWeightZ));                               
-                    du_rdthalf[i] -= 2*PI*mass[j]*(((pressurehalf[i]*rhalf[i]+pressurehalf[j]*rhalf[j])/(2*PI*rhalf[i]*rhohalf[i]*2*PI*rhalf[j]*rhohalf[j]))+(Piij/(2*PI)))*result.dWeightR;
-                    du_zdthalf[i] -= 2*PI*mass[j]*(((pressurehalf[i]*rhalf[i]+pressurehalf[j]*rhalf[j])/(2*PI*rhalf[i]*rhohalf[i]*2*PI*rhalf[j]*rhohalf[j]))+(Piij/(2*PI)))*result.dWeightZ;
-                }*/
-
+                   
 
 
             }
