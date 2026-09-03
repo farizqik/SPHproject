@@ -18,7 +18,7 @@ string Type;
 // --------------------------------------------
 
 const double dt = 0.001; 
-const double Totaltime= 20.0;
+const double Totaltime= 10.0;
 const int Nt = Totaltime / dt;
 
 
@@ -324,7 +324,7 @@ void accumulateAxisymmetricInteraction(
         return;
     }
 
-    // Exclude self/coincident interaction
+    // Exclude self/coincident interaction (only need the derivative of the kernel, not the kernel itself)
     if (s2 < 1e-14)
     {
         return;
@@ -349,14 +349,22 @@ void accumulateAxisymmetricInteraction(
 
     if (vijrij < 0.0)
     {
+        // Positive surface densities for viscosity.
+        // abs(r) is required for reflected axis particles.
+        const double etai =
+            2.0*PI*abs(ri)*rhoi;
+
+        const double etaj =
+            2.0*PI*abs(rj)*rhoj;
+
+        const double etaij =
+            0.5*(etai + etaj);
+
         double muij =
             h*vijrij/(s2 + 0.01*h*h);
 
-        double rhoij =
-            0.5*(rhoi + rhoj);
-
         Piij =
-            -alphaAV*c0*muij/rhoij;
+            -alphaAV*c0*muij/etaij;
     }
 
     // ---------------------------------------------------------
@@ -388,10 +396,10 @@ void accumulateAxisymmetricInteraction(
     // ---------------------------------------------------------
 
     double diffusionR =
-        2.0*(rhoi - rhoj)*sr/s2;
+        2.0*(rhoi - rhoj)*sr/(s2 + 0.01*h*h);
 
     double diffusionZ =
-        2.0*(rhoi - rhoj)*sz/s2;
+        2.0*(rhoi - rhoj)*sz/(s2 + 0.01*h*h);
 
     drhoAcc +=
         ((1.0/(2.0*PI))*(mj/rj) *(du_r*result.dWeightR +du_z*result.dWeightZ))+(deltadifussion*h*c0*(mj / (2.0*PI*rj*rhoj))*
@@ -425,10 +433,14 @@ void accumulateAxisymmetricInteraction(
         result.dWeightZ;
 }
 
-// --------------------------------------------------
-// Accumulate  mDBC Neighbor for a ghost particle
-// --------------------------------------------------
 
+
+
+// --------------------------------------------------------------
+// --------------------------------------------------------------
+// Accumulate  mDBC Neighbor for a ghost particle
+// --------------------------------------------------------------
+// --------------------------------------------------------------
 
 void accumulateMDBCNeighbor(
     int i,
@@ -742,14 +754,58 @@ void interpolateMDBC(
         drhoGhostZOut = 0.0;
     }
 
-    rhoBoundaryOut =
+    double rhoBoundaryCandidate =
         rhoGhostOut
         + drhoGhostROut*
           (rState[i] - rGhost[i])
         + drhoGhostZOut*
           (zState[i] - zGhost[i]);
-}
 
+    if (!isfinite(rhoBoundaryCandidate))
+    {
+        rhoBoundaryCandidate = rho0;
+        drhoGhostROut = 0.0;
+        drhoGhostZOut = 0.0;
+    }
+
+    // Prevent negative pressure at a solid boundary.
+    rhoBoundaryOut =
+        max(rhoBoundaryCandidate, rho0);
+        
+    }
+
+
+
+// --------------------------------------------------------------
+// --------------------------------------------------------------
+// Protect axisymmetric 1/r terms from an exact or near-zero radius.
+// --------------------------------------------------------------
+// --------------------------------------------------------------
+
+    void protectAxis(
+    double& radius,
+    double& radialVelocity,
+    double axisEpsilon)
+{
+    // A particle crossed from one side of the axis to the other.
+    if (radius < 0.0)
+    {
+        radius = -radius;
+        radialVelocity = -radialVelocity;
+    }
+
+    // Protect cylindrical 1/r terms from an exact or near-zero radius.
+    if (radius < axisEpsilon)
+    {
+        radius = axisEpsilon;
+
+        // Do not allow continued motion into the axis.
+        if (radialVelocity < 0.0)
+        {
+            radialVelocity = 0.0;
+        }
+    }
+}
 
 
 
@@ -848,10 +904,15 @@ int main ()
 
     const int Nh = 1;
     double hlist[Nh] = {2*dp};
+    
+
 
     for (int m = 0; m < Nh; m++)
     {
         double h = hlist[m];
+        const double axisEpsilon = 1e-8*h;
+
+
         cout << "h/dp : " << h/dp << endl;
         string foldername = 
             "WCSPHpolar_dp_" + to_string(dp) + "_h_" + to_string(h) + "_Nparticles_" + to_string(Nparticles) + "_" + kernel; 
@@ -1189,6 +1250,9 @@ int main ()
                 u_zhalf[i] = u_z[i]+(du_zdt[i]-g)*dt/2;
                 rhalf[i] = r[i]+u_r[i]*dt/2;
                 zhalf[i] = z[i]+u_z[i]*dt/2;
+
+                // rhalf will subsequently be used in cylindrical 1/r terms.
+                protectAxis(rhalf[i],u_rhalf[i],axisEpsilon);
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1337,6 +1401,7 @@ int main ()
                 u_zhalf[i] = u_z[i]+(du_zdthalf[i]-g)*dt/2;
                 rhalf[i] = r[i]+u_rhalf[i]*dt/2;
                 zhalf[i] = z[i]+u_zhalf[i]*dt/2;
+               
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1375,6 +1440,8 @@ int main ()
                 u_znew[i] = 2*u_zhalf[i]-u_z[i];
                 rnew[i] = 2*rhalf[i]-r[i];
                 znew[i] = 2*zhalf[i]-z[i];
+                // Final state must be valid before entering the next timestep.
+                protectAxis(rnew[i],u_rnew[i],axisEpsilon);
             }
 
            

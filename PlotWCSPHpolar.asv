@@ -1,0 +1,617 @@
+clear;
+clc;
+close all;
+
+%% =========================================================
+% USER SETTINGS
+% ==========================================================
+
+% Change this to the exact output folder produced by C++.
+% Both WCSPH_... and WCSPHpolar_... folder names are accepted.
+simulationFolder = ...
+    "WCSPH_dp_0.500000_h_1.000000_Nparticles_768_wendland";
+
+% plotVariable = "pressure";
+% plotVariable = "density";
+plotVariable = "velocity";
+
+saveVideo = true;
+
+% The video is saved in the current MATLAB working directory.
+[~, simulationName] = fileparts(char(simulationFolder));
+videoName = string(simulationName) + "_full_diameter.mp4";
+
+
+%% =========================================================
+% READ PARAMETERS FROM FOLDER NAME
+% ==========================================================
+
+[~, folderLeaf] = fileparts(char(simulationFolder));
+folderName = string(folderLeaf);
+
+tokens = regexp( ...
+    folderName, ...
+    '^WCSPH(?:polar)?_dp_([0-9.]+)_h_([0-9.]+)_Nparticles_([0-9]+)_([A-Za-z]+)$', ...
+    'tokens', ...
+    'once');
+
+if isempty(tokens)
+    error("Folder name does not match the expected C++ format.");
+end
+
+dp = str2double(tokens{1});
+h = str2double(tokens{2});
+NparticlesFolder = str2double(tokens{3});
+kernel = string(tokens{4});
+
+hdp = h/dp;
+
+
+%% =========================================================
+% GEOMETRY
+% Same as C++
+% ==========================================================
+
+tankradius = 25.0;
+tankheight = 10.0;
+
+waterradius = 15.0;
+
+freeboard = 2.0;
+waterheight = tankheight - freeboard;
+
+boundthick = 3.0*dp;
+
+
+%% =========================================================
+% FIND OUTPUT CSV FILES
+% ==========================================================
+
+% The wildcard accepts WCSPH_hdp_... and WCSPHpolar_hdp_....
+pattern = sprintf( ...
+    "*hdp_%.6f_t_*.csv", ...
+    hdp);
+
+files = dir(fullfile(simulationFolder, pattern));
+
+if isempty(files)
+    error( ...
+        "No CSV files matching %s were found in %s.", ...
+        pattern, ...
+        simulationFolder);
+end
+
+
+%% =========================================================
+% EXTRACT AND SORT PHYSICAL TIME
+% ==========================================================
+
+time = zeros(length(files),1);
+
+for n = 1:length(files)
+    timeToken = regexp( ...
+        files(n).name, ...
+        '_t_([0-9]+\.[0-9]+)', ...
+        'tokens', ...
+        'once');
+
+    if isempty(timeToken)
+        error( ...
+            "Could not extract time from %s.", ...
+            files(n).name);
+    end
+
+    time(n) = str2double(timeToken{1});
+end
+
+[time, order] = sort(time);
+files = files(order);
+
+fprintf("\n");
+fprintf("OUTPUT FILES\n");
+fprintf("--------------------------------------\n");
+fprintf("Timesteps    = %d\n", length(files));
+fprintf("Initial time = %.6f s\n", time(1));
+fprintf("Final time   = %.6f s\n", time(end));
+
+
+%% =========================================================
+% CSV IMPORT SETTINGS
+%
+% Columns:
+% 1 ID, 2 r, 3 z, 4 empty, 5 rho, 6 drhodt,
+% 7 pressure, 8 empty, 9 ur, 10 uz, 11 empty,
+% 12 durdt, 13 duzdt, 14 type
+% ==========================================================
+
+opts = delimitedTextImportOptions("NumVariables",14);
+
+opts.DataLines = [7 Inf];
+opts.Delimiter = ",";
+
+opts.VariableNames = ...
+    ["ID", ...
+     "r", ...
+     "z", ...
+     "empty1", ...
+     "rho", ...
+     "drhodt", ...
+     "pressure", ...
+     "empty2", ...
+     "ur", ...
+     "uz", ...
+     "empty3", ...
+     "durdt", ...
+     "duzdt", ...
+     "type"];
+
+opts.VariableTypes = ...
+    ["double", ...
+     "double", ...
+     "double", ...
+     "string", ...
+     "double", ...
+     "double", ...
+     "double", ...
+     "string", ...
+     "double", ...
+     "double", ...
+     "string", ...
+     "double", ...
+     "double", ...
+     "string"];
+
+
+%% =========================================================
+% READ FIRST TIMESTEP
+% ==========================================================
+
+filename = fullfile(files(1).folder, files(1).name);
+T = readtable(filename, opts);
+
+ID0 = T.ID;
+r0 = T.r;
+z0 = T.z;
+
+rhoInitial = T.rho;
+pressureInitial = T.pressure;
+urInitial = T.ur;
+uzInitial = T.uz;
+
+type0 = lower(strtrim(string(T.type)));
+
+boundary = type0 == "boundary";
+fluid = type0 == "fluid";
+
+Nparticles = height(T);
+Nboundary = sum(boundary);
+Nfluid = sum(fluid);
+
+fprintf("\n");
+fprintf("PARTICLE INFORMATION\n");
+fprintf("--------------------------------------\n");
+fprintf("Boundary particles = %d\n", Nboundary);
+fprintf("Fluid particles    = %d\n", Nfluid);
+fprintf("Total particles    = %d\n", Nparticles);
+
+if Nparticles ~= NparticlesFolder
+    error( ...
+        "CSV contains %d particles but folder says %d.", ...
+        Nparticles, ...
+        NparticlesFolder);
+end
+
+expectedID = (0:Nparticles-1)';
+
+if ~isequal(ID0, expectedID)
+    warning( ...
+        "Particle IDs are not sequential from 0 to %d.", ...
+        Nparticles-1);
+end
+
+if ~any(boundary) || ~any(fluid)
+    error("The CSV must contain both boundary and fluid particles.");
+end
+
+boundaryIDs = ID0(boundary);
+fluidIDs = ID0(fluid);
+
+fprintf("\n");
+fprintf("PARTICLE ID RANGES\n");
+fprintf("--------------------------------------\n");
+fprintf("Boundary IDs : %d - %d\n", ...
+    min(boundaryIDs), max(boundaryIDs));
+fprintf("Fluid IDs    : %d - %d\n", ...
+    min(fluidIDs), max(fluidIDs));
+
+
+%% =========================================================
+% SELECT INITIAL FIELD
+% ==========================================================
+
+switch plotVariable
+    case "pressure"
+        field0 = pressureInitial;
+        colorLabel = "Pressure (Pa)";
+
+    case "density"
+        field0 = rhoInitial;
+        colorLabel = "Density (kg/m^3)";
+
+    case "velocity"
+        field0 = hypot(urInitial, uzInitial);
+        colorLabel = "Velocity magnitude (m/s)";
+
+    otherwise
+        error("Use pressure, density, or velocity.");
+end
+
+
+%% =========================================================
+% FULL-DIAMETER INITIAL DISPLAY ARRAYS
+%
+% The solver contains only r >= 0. For visualization:
+% right side: x = +r
+% left side:  x = -r
+%
+% Scalar fields are copied unchanged to both sides.
+% ==========================================================
+
+xFluid0Full = [ ...
+    -r0(fluid); ...
+     r0(fluid)];
+
+zFluid0Full = [ ...
+     z0(fluid); ...
+     z0(fluid)];
+
+fieldFluid0Full = [ ...
+    field0(fluid); ...
+    field0(fluid)];
+
+xBoundary0Full = [ ...
+    -r0(boundary); ...
+     r0(boundary)];
+
+zBoundary0Full = [ ...
+     z0(boundary); ...
+     z0(boundary)];
+
+
+%% =========================================================
+% AXIS AND COLOUR LIMITS
+% ==========================================================
+
+radialPlotExtent = max(abs(r0)) + dp;
+
+xmin = -radialPlotExtent;
+xmax =  radialPlotExtent;
+
+zmin = min(z0) - dp;
+zmax = max(z0) + dp;
+
+rho0_ref = 1000.0;
+g = 9.81;
+
+switch plotVariable
+    case "pressure"
+        fieldMin = 0.0;
+        fieldMax = rho0_ref*g*waterheight;
+
+    case "density"
+        initialFluidField = field0(fluid);
+        initialFluidField = ...
+            initialFluidField(isfinite(initialFluidField));
+
+        fieldMin = min(initialFluidField);
+        fieldMax = max(initialFluidField);
+
+        if fieldMin == fieldMax
+            fieldMin = fieldMin - 1.0;
+            fieldMax = fieldMax + 1.0;
+        end
+
+    case "velocity"
+        fieldMin = 0.0;
+        fieldMax = sqrt(g*waterheight);
+end
+
+fprintf("\n");
+fprintf("COLOUR RANGE\n");
+fprintf("--------------------------------------\n");
+fprintf("Minimum = %.6f\n", fieldMin);
+fprintf("Maximum = %.6f\n", fieldMax);
+
+
+%% =========================================================
+% OPTIONAL IDEAL HYDROSTATIC PRESSURE FIGURE
+% ==========================================================
+
+if plotVariable == "pressure"
+    pressureHydrostatic = ...
+        rho0_ref*g*(waterheight - z0(fluid));
+
+    pressureHydrostatic = max(pressureHydrostatic, 0.0);
+
+    pressureHydrostaticFull = [ ...
+        pressureHydrostatic; ...
+        pressureHydrostatic];
+
+    figHydro = figure( ...
+        'Color','w', ...
+        'Position',[100 100 1200 550]);
+
+    hold on;
+
+    scatter( ...
+        xFluid0Full, ...
+        zFluid0Full, ...
+        25, ...
+        pressureHydrostaticFull, ...
+        'filled', ...
+        'MarkerEdgeColor','none');
+
+    scatter( ...
+        xBoundary0Full, ...
+        zBoundary0Full, ...
+        80, ...
+        [0 0 0], ...
+        'filled');
+
+    axis equal;
+    xlim([xmin xmax]);
+    ylim([zmin zmax]);
+
+    xlabel('x (m)');
+    ylabel('z (m)');
+
+    grid off;
+    box off;
+    colormap(turbo);
+
+    cHydro = colorbar;
+    cHydro.Label.String = ...
+        'Ideal hydrostatic pressure (Pa)';
+
+    clim([fieldMin fieldMax]);
+    title('Ideal Hydrostatic Pressure: Full Diameter');
+
+    set(gca, 'FontSize',12, 'LineWidth',1);
+end
+
+
+%% =========================================================
+% KINETIC ENERGY VS TIME
+%
+% Do not mirror KE. The C++ ring mass already represents the
+% complete three-dimensional axisymmetric fluid volume.
+% ==========================================================
+
+KE = zeros(length(files),1);
+
+for n = 1:length(files)
+    filename = fullfile(files(n).folder, files(n).name);
+
+    metadata = readmatrix( ...
+        filename, ...
+        'Range','A3:D3');
+
+    if numel(metadata) < 2
+        error( ...
+            "Could not read kinetic energy from %s.", ...
+            files(n).name);
+    end
+
+    KE(n) = metadata(2);
+end
+
+figure( ...
+    'Color','w', ...
+    'Position',[200 200 800 600]);
+
+plot(time, KE, 'LineWidth',1.5);
+
+xlabel('Time (s)');
+ylabel('Kinetic Energy (J)');
+title('Kinetic Energy vs Time');
+
+grid on;
+box on;
+set(gca, 'FontSize',12, 'LineWidth',1);
+
+fprintf("\n");
+fprintf("KINETIC ENERGY\n");
+fprintf("--------------------------------------\n");
+fprintf("Initial KE = %.6e J\n", KE(1));
+fprintf("Maximum KE = %.6e J\n", max(KE));
+fprintf("Final KE   = %.6e J\n", KE(end));
+
+
+%% =========================================================
+% CREATE FULL-DIAMETER SIMULATION FIGURE
+% ==========================================================
+
+fig = figure( ...
+    'Color','w', ...
+    'Position',[100 100 1200 550]);
+
+hold on;
+
+hFluid = scatter( ...
+    xFluid0Full, ...
+    zFluid0Full, ...
+    25, ...
+    fieldFluid0Full, ...
+    'filled', ...
+    'MarkerEdgeColor','none');
+
+hBoundary = scatter( ...
+    xBoundary0Full, ...
+    zBoundary0Full, ...
+    80, ...
+    [0 0 0], ...
+    'filled');
+
+axis equal;
+xlim([xmin xmax]);
+ylim([zmin zmax]);
+
+xlabel('x (m)');
+ylabel('z (m)');
+
+grid off;
+box off;
+colormap(turbo);
+
+c = colorbar;
+c.Label.String = colorLabel;
+clim([fieldMin fieldMax]);
+
+title(sprintf( ...
+    'Axisymmetric SPH Radial Dam-Break, t = %.3f s', ...
+    time(1)));
+
+set(gca, 'FontSize',12, 'LineWidth',1);
+
+
+%% =========================================================
+% VIDEO
+% ==========================================================
+
+if saveVideo
+    video = VideoWriter(videoName, 'MPEG-4');
+    video.FrameRate = 50;
+    open(video);
+end
+
+
+%% =========================================================
+% ANIMATION LOOP
+% ==========================================================
+
+for n = 1:length(files)
+    filename = fullfile(files(n).folder, files(n).name);
+    T = readtable(filename, opts);
+
+    if height(T) ~= Nparticles
+        error( ...
+            "Particle count changed at t = %.6f s.", ...
+            time(n));
+    end
+
+    ID = T.ID;
+    type = lower(strtrim(string(T.type)));
+
+    if ~isequal(ID, ID0)
+        error( ...
+            "Particle ID ordering changed at t = %.6f s.", ...
+            time(n));
+    end
+
+    if ~isequal(type, type0)
+        error( ...
+            "Particle type changed at t = %.6f s.", ...
+            time(n));
+    end
+
+    r = T.r;
+    z = T.z;
+    rho = T.rho;
+    pressure = T.pressure;
+    ur = T.ur;
+    uz = T.uz;
+
+    switch plotVariable
+        case "pressure"
+            field = pressure;
+
+        case "density"
+            field = rho;
+
+        case "velocity"
+            field = hypot(ur, uz);
+    end
+
+    valid = ...
+        isfinite(r) & ...
+        isfinite(z) & ...
+        isfinite(field);
+
+    if any(~valid)
+        fprintf( ...
+            "Warning: %d invalid particles at t = %.4f s\n", ...
+            sum(~valid), ...
+            time(n));
+    end
+
+    if any(r(fluid) < 0.0)
+        fprintf( ...
+            "Warning: %d physical particles have r < 0 at t = %.4f s\n", ...
+            sum(r(fluid) < 0.0), ...
+            time(n));
+    end
+
+    rplot = r;
+    zplot = z;
+    fieldplot = field;
+
+    rplot(~valid) = NaN;
+    zplot(~valid) = NaN;
+    fieldplot(~valid) = NaN;
+
+    % Duplicate only the display data.
+    xFluidFull = [ ...
+        -rplot(fluid); ...
+         rplot(fluid)];
+
+    zFluidFull = [ ...
+         zplot(fluid); ...
+         zplot(fluid)];
+
+    fieldFluidFull = [ ...
+        fieldplot(fluid); ...
+        fieldplot(fluid)];
+
+    xBoundaryFull = [ ...
+        -rplot(boundary); ...
+         rplot(boundary)];
+
+    zBoundaryFull = [ ...
+         zplot(boundary); ...
+         zplot(boundary)];
+
+    set( ...
+        hFluid, ...
+        'XData',xFluidFull, ...
+        'YData',zFluidFull, ...
+        'CData',fieldFluidFull);
+
+    set( ...
+        hBoundary, ...
+        'XData',xBoundaryFull, ...
+        'YData',zBoundaryFull);
+
+    title(sprintf( ...
+        'Axisymmetric SPH Radial Dam-Break, t = %.3f s', ...
+        time(n)));
+
+    drawnow;
+
+    if saveVideo
+        frame = getframe(fig);
+        writeVideo(video, frame);
+    end
+end
+
+
+%% =========================================================
+% CLOSE VIDEO
+% ==========================================================
+
+if saveVideo
+    close(video);
+
+    fprintf( ...
+        "\nVideo saved as %s\n", ...
+        videoName);
+end
