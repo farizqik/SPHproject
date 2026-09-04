@@ -29,13 +29,37 @@ const int Nt = Totaltime / dt;
 const double tankradius = 25.0;
 const double tankheight = 10.0;
 
-const double waterradius = 15.0;
+const double waterradius = 20.0;
 const double freeboard = 2.0;
 const double waterheight = tankheight-freeboard;
 
 const double dp = 0.5;
 
 const double boundthick = dp * 3;
+const int boundpart = 0; 
+
+
+
+// ------------------------------------------------------------
+// Some Constants
+// ------------------------------------------------------------
+const double PI = 3.14159265358979323846;
+const double g = 9.81;
+const double rho0 = 1000.0;
+
+const double c0 = 10.0*sqrt(g*(waterheight));
+
+const double gammaEOS = 7.0;
+const double B = c0*c0*rho0/gammaEOS;
+
+const double alphaAV = 0.01;
+
+const double deltadifussion = 0.0;
+
+const double axisEpsilon = 0.5*dp;
+
+
+
 
 // ------------------------------------------------------------
 // Particle properties
@@ -89,21 +113,7 @@ vector<double> du_rdthalf;
 vector<double> du_zdthalf;
 
 
-const double PI = 3.14159265358979323846;
-const double g = 9.81;
-const double rho0 = 1000.0;
-const int boundpart = 0; 
-const double c0 = 10.0*sqrt(g*(waterheight));
 
-
-const double gammaEOS = 7.0;
-const double B = c0*c0*rho0/gammaEOS;
-
-const double alphaAV = 0.01;
-
-
-//set deltadifussion = 0.0 if it's not considered
-const double deltadifussion = 0.0;
 
 
 
@@ -396,10 +406,10 @@ void accumulateAxisymmetricInteraction(
     // ---------------------------------------------------------
 
     double diffusionR =
-        2.0*(rhoi - rhoj)*sr/(s2 + 0.01*h*h);
+        2.0*(rhoi - rhoj)*sr/s2;
 
     double diffusionZ =
-        2.0*(rhoi - rhoj)*sz/(s2 + 0.01*h*h);
+        2.0*(rhoi - rhoj)*sz/s2;
 
     drhoAcc +=
         ((1.0/(2.0*PI))*(mj/rj) *(du_r*result.dWeightR +du_z*result.dWeightZ))+(deltadifussion*h*c0*(mj / (2.0*PI*rj*rhoj))*
@@ -910,7 +920,7 @@ int main ()
     for (int m = 0; m < Nh; m++)
     {
         double h = hlist[m];
-        const double axisEpsilon = 1e-8*h;
+        
 
 
         cout << "h/dp : " << h/dp << endl;
@@ -974,18 +984,27 @@ int main ()
 
     for (double zp = -0.5*dp; zp > -boundthick; zp -= dp)
     {
-        for (double rp = 0.5*dp; rp < tankradius; rp += dp)
+        for (double rp = 0.5*dp; rp < tankradius+boundthick; rp += dp)
         {
 
             r[i] = rp;
             z[i] = zp;
 
+            if (rp > tankradius)
+            {
+                // Diagonal reflection into the physical tank.
+                rghost[i] = 2.0*tankradius - rp;
+                zghost[i] = -zp;
+            }
+            else
+            {
+                rghost[i] = rp;
+                zghost[i] = -zp;
+            }
+
             u_r[i] = 0.0;
             u_z[i] = 0.0;
 
-            rghost[i] = r[i];
-            zghost[i] = -z[i];
-          
             rho[i] = rho0;
 
             i++;
@@ -999,7 +1018,7 @@ int main ()
          rp < tankradius + boundthick;
          rp += dp)
     {
-        for (double zp = -boundthick+0.5*dp; zp < tankheight; zp += dp)
+        for (double zp = 0.5*dp; zp < tankheight; zp += dp)
         {
 
             r[i] = rp;
@@ -1102,7 +1121,7 @@ int main ()
             
             for (int i = 0; i < Nparticles; i++)
             {
-                pressure[i] = B*(pow(rho[i]/rho0,gammaEOS)-1.0);                            
+                pressure[i] = B*(pow(rho[i]/rho0, gammaEOS) - 1.0);                            
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1134,6 +1153,15 @@ int main ()
 
                 for (int j = 0; j < Nparticles; j++)
                 {
+                    double piPair = pressure[i];
+                    double pjPair = pressure[j];
+
+                    if (j < Nboundary)
+                    {
+                        piPair = max(piPair, 0.0);
+                        //pjPair = max(pjPair, 0.0);
+                    }
+
                     //real particle j
                     accumulateAxisymmetricInteraction(
                         r[i],
@@ -1141,14 +1169,14 @@ int main ()
                         u_r[i],
                         u_z[i],
                         rho[i],
-                        pressure[i],
+                        piPair,
 
                         r[j],
                         z[j],
                         u_r[j],
                         u_z[j],
                         rho[j],
-                        pressure[j],
+                        pjPair,
                         mass[j],
 
                         h,
@@ -1167,14 +1195,14 @@ int main ()
                             u_r[i],
                             u_z[i],
                             rho[i],
-                            pressure[i],
+                            piPair,
 
                             -r[j],
                             z[j],
                             -u_r[j],
                             u_z[j],
                             rho[j],
-                            pressure[j],
+                            pjPair,
                             -mass[j],
 
                             h,
@@ -1252,7 +1280,7 @@ int main ()
                 zhalf[i] = z[i]+u_z[i]*dt/2;
 
                 // rhalf will subsequently be used in cylindrical 1/r terms.
-                protectAxis(rhalf[i],u_rhalf[i],axisEpsilon);
+                //protectAxis(rhalf[i],u_rhalf[i],axisEpsilon);
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1314,7 +1342,7 @@ int main ()
             
             for (int i = 0; i < Nparticles; i++)
             {
-                pressurehalf[i] = B*(pow(rhohalf[i]/rho0,gammaEOS)-1.0);                            
+                pressurehalf[i] = B*(pow(rhohalf[i]/rho0, gammaEOS) - 1.0);
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1332,6 +1360,19 @@ int main ()
 
                 for (int j = 0; j < Nparticles; j++)
                 {
+
+   
+                    double piPair = pressurehalf[i];
+                    double pjPair = pressurehalf[j];
+
+                    if (j < Nboundary)
+                    {
+                        piPair = max(piPair, 0.0);
+                        //pjPair = max(pjPair, 0.0);
+                    }
+
+                    // Pass piPair and pjPair into both the real
+
                     //real particle j
                     accumulateAxisymmetricInteraction(
                         rhalf[i],
@@ -1339,14 +1380,14 @@ int main ()
                         u_rhalf[i],
                         u_zhalf[i],
                         rhohalf[i],
-                        pressurehalf[i],
+                        piPair,
 
                         rhalf[j],
                         zhalf[j],
                         u_rhalf[j],
                         u_zhalf[j],
                         rhohalf[j],
-                        pressurehalf[j],
+                        pjPair,
                         mass[j],
 
                         h,
@@ -1365,14 +1406,14 @@ int main ()
                             u_rhalf[i],
                             u_zhalf[i],
                             rhohalf[i],
-                            pressurehalf[i],
+                            piPair,
 
                             -rhalf[j],
                             zhalf[j],
                             -u_rhalf[j],
                             u_zhalf[j],
                             rhohalf[j],
-                            pressurehalf[j],
+                            pjPair,
                             -mass[j],
 
                             h,
@@ -1396,11 +1437,39 @@ int main ()
 
             for (int i = Nboundary; i < Nparticles; i++)
             {
-                rhohalf[i] = rho[i]+(drhodthalf[i]-(rhohalf[i]*u_rhalf[i]/rhalf[i]))*dt/2;
-                u_rhalf[i] = u_r[i]+(du_rdthalf[i]+(pressurehalf[i]/(rhohalf[i]*rhalf[i])))*dt/2;
-                u_zhalf[i] = u_z[i]+(du_zdthalf[i]-g)*dt/2;
-                rhalf[i] = r[i]+u_rhalf[i]*dt/2;
-                zhalf[i] = z[i]+u_zhalf[i]*dt/2;
+                const double rhoPred = rhohalf[i];
+                const double urPred  = u_rhalf[i];
+                const double rPred   = rhalf[i];
+
+                const double densityRateHalf =
+                    drhodthalf[i]
+                    - rhoPred*urPred/rPred;
+
+                const double radialAccelerationHalf =
+                    du_rdthalf[i]
+                    + pressurehalf[i]/(rhoPred*rPred);
+
+                const double axialAccelerationHalf =
+                    du_zdthalf[i] - g;
+
+                const double rhoCorrected =
+                    rho[i] + 0.5*dt*densityRateHalf;
+
+                const double urCorrected =
+                    u_r[i] + 0.5*dt*radialAccelerationHalf;
+
+                const double uzCorrected =
+                    u_z[i] + 0.5*dt*axialAccelerationHalf;
+
+                rhohalf[i] = rhoCorrected;
+                u_rhalf[i] = urCorrected;
+                u_zhalf[i] = uzCorrected;
+
+                rhalf[i] =
+                    r[i] + 0.5*dt*urCorrected;
+
+                zhalf[i] =
+                    z[i] + 0.5*dt*uzCorrected;
                
             }
 
@@ -1441,7 +1510,7 @@ int main ()
                 rnew[i] = 2*rhalf[i]-r[i];
                 znew[i] = 2*zhalf[i]-z[i];
                 // Final state must be valid before entering the next timestep.
-                protectAxis(rnew[i],u_rnew[i],axisEpsilon);
+                //protectAxis(rnew[i],u_rnew[i],axisEpsilon);
             }
 
            
@@ -1457,6 +1526,89 @@ int main ()
                 u_z[i] = u_znew[i];
                 rho[i] = rhonew[i];
                 
+            }
+
+// -----------------------------------------------------------------------------------------------------------------------------
+// Density Reinitialisation every 20 Timesteps
+// -----------------------------------------------------------------------------------------------------------------------------
+            vector<double> rhoReinitialized = rho;
+
+            if ((n + 1) % 20 == 0)
+            {
+                for (int i = Nboundary; i < Nparticles; i++)
+                {
+                    double numerator = 0.0;
+                    double denominator = 0.0;
+
+                    for (int j = 0; j < Nparticles; j++)
+                    {
+                        const double sr = r[i] - r[j];
+                        const double sz = z[i] - z[j];
+                        const double s2 = sr*sr + sz*sz;
+
+                        if (s2 > 4.0*h*h)
+                        {
+                            continue;
+                        }
+
+                        const double distance = sqrt(s2);
+                        const double q = distance/h;
+
+                        double dirR = 0.0;
+                        double dirZ = 0.0;
+
+                        if (distance > 1e-14)
+                        {
+                            dirR = sr/distance;
+                            dirZ = sz/distance;
+                        }
+
+                        KernelResult result;
+
+                        if (kernel == "gaussian")
+                        {
+                            result =
+                                gaussian(q, h, dirR, dirZ);
+                        }
+                        else if (kernel == "cubic")
+                        {
+                            result =
+                                cubicSpline(q, h, dirR, dirZ);
+                        }
+                        else if (kernel == "wendland")
+                        {
+                            result =
+                                Wendland(q, h, dirR, dirZ);
+                        }
+                        else
+                        {
+                            throw invalid_argument(
+                                "Kernel must be gaussian, cubic, or wendland.");
+                        }
+
+                        numerator +=
+                            mass[j]/
+                            (2.0*PI*r[j])*
+                            result.Weight;
+
+                        denominator +=
+                            mass[j]/
+                            (2.0*PI*r[j]*rho[j])*
+                            result.Weight;
+                    }
+
+                    if (denominator > 1e-12)
+                    {
+                        rhoReinitialized[i] =
+                            numerator/denominator;
+                    }
+                }
+
+                // Simultaneous assignment is essential.
+                for (int i = Nboundary; i < Nparticles; i++)
+                {
+                    rho[i] = rhoReinitialized[i];
+                }
             }
 
         }
