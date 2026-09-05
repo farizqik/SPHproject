@@ -17,7 +17,7 @@ string Type;
 // Timestep
 // --------------------------------------------
 
-const double dt = 0.001; 
+const double dt = 0.0005; 
 const double Totaltime= 10.0;
 const int Nt = Totaltime / dt;
 
@@ -29,11 +29,11 @@ const int Nt = Totaltime / dt;
 const double tankradius = 25.0;
 const double tankheight = 10.0;
 
-const double waterradius = 20.0;
+const double waterradius = 15.0;
 const double freeboard = 2.0;
 const double waterheight = tankheight-freeboard;
 
-const double dp = 0.5;
+const double dp = 0.25;
 
 const double boundthick = dp * 3;
 const int boundpart = 0; 
@@ -56,7 +56,7 @@ const double alphaAV = 0.01;
 
 const double deltadifussion = 0.0;
 
-const double axisEpsilon = 0.5*dp;
+const double axisEpsilon = 0.25*dp;
 
 
 
@@ -913,7 +913,7 @@ int main ()
 
 
     const int Nh = 1;
-    double hlist[Nh] = {2*dp};
+    double hlist[Nh] = {1.5*dp};
     
 
 
@@ -1159,7 +1159,15 @@ int main ()
                     if (j < Nboundary)
                     {
                         piPair = max(piPair, 0.0);
-                        //pjPair = max(pjPair, 0.0);
+                        pjPair = max(pjPair, 0.0);
+
+                        if (z[j] < 0.0)
+                        {
+                           const double wallpressure = 0.5*(rho[i]+rho[j])*c0*max(0.0, u_z[j]-u_z[i]);
+                           //piPair += wallpressure;
+                           pjPair += wallpressure;
+                        }
+                        
                     }
 
                     //real particle j
@@ -1280,7 +1288,7 @@ int main ()
                 zhalf[i] = z[i]+u_z[i]*dt/2;
 
                 // rhalf will subsequently be used in cylindrical 1/r terms.
-                //protectAxis(rhalf[i],u_rhalf[i],axisEpsilon);
+                protectAxis(rhalf[i],u_rhalf[i],axisEpsilon);
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1368,7 +1376,16 @@ int main ()
                     if (j < Nboundary)
                     {
                         piPair = max(piPair, 0.0);
-                        //pjPair = max(pjPair, 0.0);
+                        pjPair = max(pjPair, 0.0);
+
+                        if (zhalf[j] < 0.0)
+                        {
+                            const double wallpressure = 0.5*(rhohalf[i]+rhohalf[j])*c0*max(0.0, u_zhalf[j]-u_zhalf[i]);
+                            //piPair += wallpressure;
+                            pjPair += wallpressure;
+                        }
+
+                       
                     }
 
                     // Pass piPair and pjPair into both the real
@@ -1510,7 +1527,7 @@ int main ()
                 rnew[i] = 2*rhalf[i]-r[i];
                 znew[i] = 2*zhalf[i]-z[i];
                 // Final state must be valid before entering the next timestep.
-                //protectAxis(rnew[i],u_rnew[i],axisEpsilon);
+                protectAxis(rnew[i],u_rnew[i],axisEpsilon);
             }
 
            

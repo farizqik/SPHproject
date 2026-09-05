@@ -7,11 +7,11 @@ close all;
 % ==========================================================
 
 simulationFolder = ...
-    "WCSPHpolar_dp_0.500000_h_1.000000_Nparticles_859_wendland";
+    "WCSPHpolar_dp_0.250000_h_0.500000_Nparticles_2349_wendland";
 
- plotVariable = "pressure";
+% plotVariable = "pressure";
 % plotVariable = "density";
-% plotVariable = "velocity";
+plotVariable = "velocity";
 
 saveVideo = true;
 
@@ -877,7 +877,7 @@ for n = 1:length(files)
 
     drawnow;
 
-    pause(0.0001);
+    pause(0.00001);
 
 
     %% -----------------------------------------------------
