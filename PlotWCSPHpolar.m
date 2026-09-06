@@ -7,7 +7,7 @@ close all;
 % ==========================================================
 
 simulationFolder = ...
-    "WCSPHpolar_dp_0.250000_h_0.500000_Nparticles_2349_wendland";
+    "WCSPHpolar_dp_0.250000_h_0.500000_Nparticles_2989_wendland";
 
 % plotVariable = "pressure";
 % plotVariable = "density";
