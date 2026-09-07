@@ -9,13 +9,13 @@ close all;
 simulationFolder = ...
     "WCSPHpolar_dp_0.250000_h_0.500000_Nparticles_2989_wendland";
 
-% plotVariable = "pressure";
+ plotVariable = "pressure";
 % plotVariable = "density";
-plotVariable = "velocity";
+% plotVariable = "velocity";
 
 saveVideo = true;
 
-videoName = simulationFolder + ".mp4";
+videoName = simulationFolder + "_single_side.mp4";
 
 
 %% =========================================================
@@ -342,11 +342,21 @@ fprintf( ...
 % ==========================================================
 
 % The CSV x-coordinate is the physical radius r >= 0.
-% Display the complete diameter using x = +/-r.
-radialPlotExtent = max(abs(x0)) + dp;
+% Plot only this original meridional side.
+radialPlotExtent = max(x0) + dp;
 
-xmin = -radialPlotExtent;
-xmax =  radialPlotExtent;
+% Display-only wall outside r = 0. These particles are never
+% included in the simulation, energy, pressure, or particle counts.
+leftWallR = (-0.5*dp : -dp : -boundthick + 0.5*dp)';
+leftWallZ = (-boundthick + 0.5*dp : dp : tankheight - 0.5*dp)';
+
+[leftWallRGrid,leftWallZGrid] = meshgrid(leftWallR,leftWallZ);
+
+leftWallRPlot = leftWallRGrid(:);
+leftWallZPlot = leftWallZGrid(:);
+
+xmin = min(leftWallRPlot) - dp;
+xmax = radialPlotExtent;
 
 ymin = min(y0) - dp;
 ymax = max(y0) + dp;
@@ -393,31 +403,20 @@ end
 
 
 %% =========================================================
-% FULL-DIAMETER INITIAL DISPLAY ARRAYS
+% SINGLE-SIDE INITIAL DISPLAY ARRAYS
 %
-% These duplicates exist only for plotting. Do not use them for
-% mass, kinetic energy, neighbour interactions, or particle counts.
+% The artificial left wall exists only in these plotting arrays.
 % ==========================================================
 
-xFluid0Full = [ ...
-    -x0(fluid);
-     x0(fluid)];
+xFluid0Plot = x0(fluid);
 
-zFluid0Full = [ ...
-     y0(fluid);
-     y0(fluid)];
+zFluid0Plot = y0(fluid);
 
-fieldFluid0Full = [ ...
-    field0(fluid);
-    field0(fluid)];
+fieldFluid0Plot = field0(fluid);
 
-xBoundary0Full = [ ...
-    -x0(boundary);
-     x0(boundary)];
+xBoundary0Plot = [x0(boundary); leftWallRPlot];
 
-zBoundary0Full = [ ...
-     y0(boundary);
-     y0(boundary)];
+zBoundary0Plot = [y0(boundary); leftWallZPlot];
 
 
 %% =========================================================
@@ -499,10 +498,10 @@ if plotVariable == "pressure"
     %% Fluid
 
     scatter( ...
-        xFluid0Full, ...
-        zFluid0Full, ...
-        25, ...
-        [pressureHydrostatic; pressureHydrostatic], ...
+        xFluid0Plot, ...
+        zFluid0Plot, ...
+        50, ...
+        pressureHydrostatic, ...
         'filled', ...
         'MarkerEdgeColor','none');
 
@@ -510,9 +509,9 @@ if plotVariable == "pressure"
     %% Boundary
 
     scatter( ...
-        xBoundary0Full, ...
-        zBoundary0Full, ...
-        80, ...
+        xBoundary0Plot, ...
+        zBoundary0Plot, ...
+        150, ...
         [0 0 0], ...
         'filled');
 
@@ -522,7 +521,7 @@ if plotVariable == "pressure"
     xlim([xmin xmax]);
     ylim([ymin ymax]);
 
-    xlabel('x (m)');
+    xlabel('r (m)');
     ylabel('z (m)');
 
     grid off;
@@ -618,10 +617,10 @@ hold on;
 % ==========================================================
 
 hFluid = scatter( ...
-    xFluid0Full, ...
-    zFluid0Full, ...
+    xFluid0Plot, ...
+    zFluid0Plot, ...
     25, ...
-    fieldFluid0Full, ...
+    fieldFluid0Plot, ...
     'filled', ...
     'MarkerEdgeColor','none');
 
@@ -631,8 +630,8 @@ hFluid = scatter( ...
 % ==========================================================
 
 hBoundary = scatter( ...
-    xBoundary0Full, ...
-    zBoundary0Full, ...
+    xBoundary0Plot, ...
+    zBoundary0Plot, ...
     80, ...
     [0 0 0], ...
     'filled');
@@ -647,7 +646,7 @@ axis equal;
 xlim([xmin xmax]);
 ylim([ymin ymax]);
 
-xlabel('x (m)');
+xlabel('r (m)');
 ylabel('z (m)');
 
 grid off;
@@ -663,7 +662,7 @@ c.Label.String = ...
 clim([fieldMin fieldMax]);
 
 title(sprintf( ...
-    'Axisymmetric SPH Radial Dam-Break, t = %.3f s', ...
+    'Axisymmetric SPH Radial Dam-Break (single side), t = %.3f s', ...
     time(1)));
 
 set(gca, ...
@@ -819,28 +818,18 @@ for n = 1:length(files)
 
 
     %% -----------------------------------------------------
-    % RECONSTRUCT THE FULL DIAMETER FOR DISPLAY ONLY
+    % BUILD SINGLE-SIDE DISPLAY ARRAYS
     % ------------------------------------------------------
 
-    xFluidFull = [ ...
-        -xplot(fluid);
-         xplot(fluid)];
+    xFluidPlot = xplot(fluid);
 
-    zFluidFull = [ ...
-         yplot(fluid);
-         yplot(fluid)];
+    zFluidPlot = yplot(fluid);
 
-    fieldFluidFull = [ ...
-        fieldplot(fluid);
-        fieldplot(fluid)];
+    fieldFluidPlot = fieldplot(fluid);
 
-    xBoundaryFull = [ ...
-        -xplot(boundary);
-         xplot(boundary)];
+    xBoundaryPlot = [xplot(boundary); leftWallRPlot];
 
-    zBoundaryFull = [ ...
-         yplot(boundary);
-         yplot(boundary)];
+    zBoundaryPlot = [yplot(boundary); leftWallZPlot];
 
 
     %% -----------------------------------------------------
@@ -852,9 +841,9 @@ for n = 1:length(files)
 
     set( ...
         hFluid, ...
-        'XData', xFluidFull, ...
-        'YData', zFluidFull, ...
-        'CData', fieldFluidFull);
+        'XData', xFluidPlot, ...
+        'YData', zFluidPlot, ...
+        'CData', fieldFluidPlot);
 
 
     %% -----------------------------------------------------
@@ -863,8 +852,8 @@ for n = 1:length(files)
 
     set( ...
         hBoundary, ...
-        'XData', xBoundaryFull, ...
-        'YData', zBoundaryFull);
+        'XData', xBoundaryPlot, ...
+        'YData', zBoundaryPlot);
 
 
     %% -----------------------------------------------------
@@ -872,7 +861,7 @@ for n = 1:length(files)
     % ------------------------------------------------------
 
     title(sprintf( ...
-        'Axisymmetric SPH Radial Dam-Break, t = %.3f s', ...
+        'Axisymmetric SPH Radial Dam-Break (single side), t = %.3f s', ...
         time(n)));
 
     drawnow;

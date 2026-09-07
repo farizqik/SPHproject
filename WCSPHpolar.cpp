@@ -18,7 +18,7 @@ string Type;
 // --------------------------------------------
 
 const double dt = 0.0005; 
-const double Totaltime= 10.0;
+const double Totaltime= 20.0;
 const int Nt = Totaltime / dt;
 
 
@@ -36,7 +36,6 @@ const double waterheight = tankheight-freeboard;
 const double dp = 0.25;
 
 const double boundthick = dp * 3;
-const int boundpart = 0; 
 
 
 
@@ -56,7 +55,7 @@ const double alphaAV = 0.01;
 
 const double deltadifussion = 0.0;
 
-const double axisEpsilon = 0.25*dp;
+const double axisEpsilon = 0.05*dp;
 
 
 
@@ -293,12 +292,48 @@ bool solveLinear(double A[][3], double b[], double X[], int n)
 
 
 
+// --------------------------------------------------------------
+// --------------------------------------------------------------
+// Protect axisymmetric 1/r terms from an exact or near-zero radius.
+// --------------------------------------------------------------
+// --------------------------------------------------------------
+
+
+
+void protectAxis(
+double& radius,
+double& radialVelocity)
+{
+    // A particle crossed from one side of the axis to the other.
+    if (radius < 0.0)
+    {
+        radius = -radius;
+        radialVelocity = -radialVelocity;
+    }
+
+}
+
 double axisRadius(double r)
+{
+    if (r >= 0.0 && r < axisEpsilon)
+    {
+        return axisEpsilon;
+    }
+
+    if (r < 0.0 && r > -axisEpsilon)
+    {
+        return -axisEpsilon;
+    }
+
+    return r;
+}
+
+/*(double axisRadius(double r)
 {
     return copysign(
         max(abs(r), axisEpsilon),
         r);
-}
+}*/
 
 
 
@@ -434,24 +469,34 @@ void accumulateAxisymmetricInteraction(
     // Tensile correction for real fluid-fluid interactions.
     double piEff = pi;
     double pjEff = pj;
+
     if (kernel == "wendland" &&
         ri > 0.0 &&
         rj > 0.0 &&
         pi*ri + pj*rj < 0.0)
     {
-        double tensileFactor =
-            pow(result.Weight /
-                Wendland(dp/h, h, 0.0, 0.0).Weight,
-                4.0);
+        double referenceWeight =
+            Wendland(dp/h, h, 0.0, 0.0).Weight;
 
-        if (pi < 0.0)
+        double tensileFactor =
+            pow(result.Weight/referenceWeight, 4.0);
+
+        if (pi > 0.0)
         {
-            piEff += 0.20*abs(pi)*tensileFactor;
+            piEff += 0.01*pi*tensileFactor;
+        }
+        else if (pi < 0.0)
+        {
+            piEff += 0.20*(-pi)*tensileFactor;
         }
 
-        if (pj < 0.0)
+        if (pj > 0.0)
         {
-            pjEff += 0.20*abs(pj)*tensileFactor;
+            pjEff += 0.01*pj*tensileFactor;
+        }
+        else if (pj < 0.0)
+        {
+            pjEff += 0.20*(-pj)*tensileFactor;
         }
     }
 
@@ -826,37 +871,7 @@ void interpolateMDBC(
 
 
 
-// --------------------------------------------------------------
-// --------------------------------------------------------------
-// Protect axisymmetric 1/r terms from an exact or near-zero radius.
-// --------------------------------------------------------------
-// --------------------------------------------------------------
 
-
-
-void protectAxis(
-double& radius,
-double& radialVelocity)
-{
-    // A particle crossed from one side of the axis to the other.
-    if (radius < 0.0)
-    {
-        radius = -radius;
-        radialVelocity = -radialVelocity;
-    }
-
-    /*// Protect cylindrical 1/r terms from an exact or near-zero radius.
-    if (radius < axisEpsilon)
-    {
-        radius = axisEpsilon;
-
-        // Do not allow continued motion into the axis.
-        if (radialVelocity < 0.0)
-        {
-            radialVelocity = 0.0;
-        }
-    }*/
-}
 
 
 
@@ -1191,23 +1206,11 @@ int main ()
                 du_rdt[i] = 0.0;
                 du_zdt[i] = 0.0;
                 
-                bool hasNeighbour = false;
+                //bool hasNeighbour = false;
 
                 for (int j = 0; j < Nparticles; j++)
                 {
 
-                    if (j != i)
-                    {
-                        double dr = r[i] - r[j];
-                        double dz = z[i] - z[j];
-                        double distanceSquared = dr*dr + dz*dz;
-
-                        if (distanceSquared > 1e-14 &&
-                            distanceSquared < 4.0*h*h)
-                        {
-                            hasNeighbour = true;
-                        }
-                    }
 
                     double piPair = pressure[i];
                     double pjPair = pressure[j];
@@ -1220,7 +1223,6 @@ int main ()
                         if (z[j] < 0.0)
                         {
                            const double wallpressure = 0.5*(rho[i]+rho[j])*c0*max(0.0, u_z[j]-u_z[i]);
-                           //piPair += wallpressure;
                            pjPair += wallpressure;
                         }
                         
@@ -1280,10 +1282,7 @@ int main ()
                     
                 }
                 
-                if (hasNeighbour)
-                {
-                    du_rdt[i] += pressure[i] / (rho[i] * axisRadius(r[i]));
-                }
+
                     
                    
             }
@@ -1345,8 +1344,7 @@ int main ()
             for (int i = Nboundary; i < Nparticles; i++)
             {
                 rhohalf[i] = rho[i]+(drhodt[i]-(rho[i]*u_r[i]/axisRadius(r[i])))*dt/2;
-                //u_rhalf[i] = u_r[i]+(du_rdt[i]+(pressure[i]/(rho[i]*axisRadius(r[i]))))*dt/2;
-                u_rhalf[i] = u_r[i] + du_rdt[i]*dt/2.0;
+                u_rhalf[i] = u_r[i]+(du_rdt[i]+(pressure[i]/(rho[i]*axisRadius(r[i]))))*dt/2;
                 u_zhalf[i] = u_z[i]+(du_zdt[i]-g)*dt/2;
                 rhalf[i] = r[i]+u_r[i]*dt/2;
                 zhalf[i] = z[i]+u_z[i]*dt/2;
@@ -1429,23 +1427,11 @@ int main ()
                 du_rdthalf[i] = 0.0;
                 du_zdthalf[i] = 0.0;
                 
-                bool hasNeighbour = false;
+                //bool hasNeighbour = false;
 
                 for (int j = 0; j < Nparticles; j++)
                 {
-                    
-                    if (j != i)
-                    {
-                        double dr = rhalf[i] - rhalf[j];
-                        double dz = zhalf[i] - zhalf[j];
-                        double distanceSquared = dr*dr + dz*dz;
 
-                        if (distanceSquared > 1e-14 &&
-                            distanceSquared < 4.0*h*h)
-                        {
-                            hasNeighbour = true;
-                        }
-                    }
 
    
                     double piPair = pressurehalf[i];
@@ -1459,7 +1445,6 @@ int main ()
                         if (zhalf[j] < 0.0)
                         {
                             const double wallpressure = 0.5*(rhohalf[i]+rhohalf[j])*c0*max(0.0, u_zhalf[j]-u_zhalf[i]);
-                            //piPair += wallpressure;
                             pjPair += wallpressure;
                         }
 
@@ -1521,12 +1506,6 @@ int main ()
                         }
                 }
 
-                if (hasNeighbour)
-                {
-                    du_rdthalf[i] +=
-                        pressurehalf[i] /
-                        (rhohalf[i] * axisRadius(rhalf[i]));
-                }
                    
 
 
@@ -1547,11 +1526,10 @@ int main ()
                     drhodthalf[i]
                     - rhoPred*urPred/axisRadius(rPred);
 
-                /*const double radialAccelerationHalf =
+                const double radialAccelerationHalf =
                     du_rdthalf[i]
-                    + pressurehalf[i]/(rhoPred*axisRadius(rPred));*/
+                    + pressurehalf[i]/(rhoPred*axisRadius(rPred));
 
-                const double radialAccelerationHalf = du_rdthalf[i];
 
                 const double axialAccelerationHalf =
                     du_zdthalf[i] - g;
@@ -1615,6 +1593,47 @@ int main ()
                 znew[i] = 2*zhalf[i]-z[i];
                 // Final state must be valid before entering the next timestep.
                 protectAxis(rnew[i],u_rnew[i]);
+
+                if (znew[i] < -0.5*dp || rnew[i] > tankradius + 0.5*dp)
+                {
+                    cerr << "First particle crossing"
+                        << "  time = " << (n + 1)*dt
+                        << "  particle = " << i
+                        << "  old r = " << r[i]
+                        << "  new r = " << rnew[i]
+                        << "  old ur = " << u_r[i]
+                        << "  new ur = " << u_rnew[i]
+                        << "  old z = " << z[i]
+                        << "  new z = " << znew[i]
+                        << "  old uz = " << u_z[i]
+                        << "  new uz = " << u_znew[i]
+                        << "  rho = " << rhonew[i]
+                        << "  pressureHalf = " << pressurehalf[i]
+                        << "  pairAzHalf = " << du_zdthalf[i]
+                        << endl;
+
+                    return 1;
+                }
+
+                if (!isfinite(rnew[i]) ||
+                    !isfinite(znew[i]) ||
+                    !isfinite(u_rnew[i]) ||
+                    !isfinite(u_znew[i]) ||
+                    !isfinite(rhonew[i]) ||
+                    rhonew[i] <= 0.0)
+                {
+                    cerr << "Invalid fluid state"
+                        << "  time = " << (n + 1)*dt
+                        << "  particle = " << i
+                        << "  r = " << rnew[i]
+                        << "  z = " << znew[i]
+                        << "  ur = " << u_rnew[i]
+                        << "  uz = " << u_znew[i]
+                        << "  rho = " << rhonew[i]
+                        << endl;
+
+                    return 1;
+                }
             }
 
            
