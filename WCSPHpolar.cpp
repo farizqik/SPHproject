@@ -17,8 +17,8 @@ string Type;
 // Timestep
 // --------------------------------------------
 
-const double dt = 0.0005; 
-const double Totaltime= 20.0;
+const double dt = 0.001; 
+const double Totaltime= 10.0;
 const int Nt = Totaltime / dt;
 
 
@@ -26,16 +26,16 @@ const int Nt = Totaltime / dt;
 // Geometry
 // ------------------------------------------------------------
 
-const double tankradius = 25.0;
-const double tankheight = 10.0;
+const double tankradius = 48.0;
+const double tankheight = 27.0;
 
-const double waterradius = 20.0;
-const double freeboard = 2.0;
-const double waterheight = tankheight-freeboard;
+const double waterradius = 12.0;
+//const double freeboard = 2.0;
+const double waterheight = 24.0;
 
-const double dp = 0.25;
+const double dp = 0.5;
 
-const double boundthick = dp * 3;
+const double boundthick = dp * 4;
 
 
 
@@ -53,9 +53,9 @@ const double B = c0*c0*rho0/gammaEOS;
 
 const double alphaAV = 0.01;
 
-const double deltadifussion = 0.0;
+const double deltadifussion = 0.05;
 
-const double axisEpsilon = 0.05*dp;
+const double axisEpsilon = 0.5*dp;
 
 
 
@@ -327,13 +327,6 @@ double axisRadius(double r)
 
     return r;
 }
-
-/*(double axisRadius(double r)
-{
-    return copysign(
-        max(abs(r), axisEpsilon),
-        r);
-}*/
 
 
 
@@ -1177,7 +1170,8 @@ int main ()
             
             for (int i = 0; i < Nparticles; i++)
             {
-                pressure[i] = B*(pow(rho[i]/rho0, gammaEOS) - 1.0);                            
+                //pressure[i] = B*(pow(rho[i]/rho0, gammaEOS) - 1.0);
+                pressure[i] = max(0.0,B*(pow(rho[i]/rho0, gammaEOS) - 1.0));                            
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1215,17 +1209,51 @@ int main ()
                     double piPair = pressure[i];
                     double pjPair = pressure[j];
 
-                    if (j < Nboundary)
+                    /*if (j < Nboundary)
                     {
                         piPair = max(piPair, 0.0);
                         //pjPair = max(pjPair, 0.0);
 
+                        // Bottom wall
                         if (z[j] < 0.0)
                         {
-                           const double wallpressure = 0.5*(rho[i]+rho[j])*c0*max(0.0, u_z[j]-u_z[i]);
-                           pjPair += wallpressure;
+                            pjPair +=
+                                0.5*(rho[i] + rho[j])*c0*
+                                max(0.0, u_z[j] - u_z[i]);
+                        }
+
+                        // Outer radial wall
+                        if (r[j] > tankradius)
+                        {
+                            pjPair +=
+                                0.5*(rho[i] + rho[j])*c0*
+                                max(0.0, u_r[i] - u_r[j]);
                         }
                         
+                    }*/
+
+                    if (j < Nboundary)
+                    {
+                        // Bottom wall: reflected-wall acoustic pressure
+                        if (z[j] < 0.0)
+                        {
+                            piPair = max(
+                                0.0,
+                                0.5*(pressure[i] + pressure[j])
+                                + 0.5*(rho[i] + rho[j])*c0
+                                *max(0.0, u_z[j] - u_z[i])
+                            );
+
+                            pjPair = piPair;
+                        }
+
+                        // Keep your existing outer-wall treatment for now.
+                        if (r[j] > tankradius)
+                        {
+                            pjPair +=
+                                0.5*(rho[i] + rho[j])*c0
+                                *max(0.0, u_r[i] - u_r[j]);
+                        }
                     }
 
                     //real particle j
@@ -1320,7 +1348,11 @@ int main ()
                 file << L2normpressure << "," << KE << "," << dp << "," << Nfluid <<endl;
                 file << endl;
                 file << "t" << "," << t << endl;
-                file << "ID"<< ","<< "x"<< "," << "y" << ","<< ","<<"rho"<< "," << "drhodt" << "," << "pressure"<< "," << "," << "u" << "," << "v" << "," << "," << "du_rdt" << "," << "du_zdt" <<"," << "Type" << endl;
+                //file << "ID"<< ","<< "x"<< "," << "y" << ","<< ","<<"rho"<< "," << "drhodt" << "," << "pressure"<< "," << "," << "u" << "," << "v" << "," << "," << "du_rdt" << "," << "du_zdt" <<"," << "Type" << endl;
+                file << "ID,r,z,,rho,drhodt,pressure,,"
+                    << "u_r,u_z,velocity,,"
+                    << "pairAr,pairAz,totalAr,totalAz,Type"
+                    << endl;
                 for (int i = 0; i < Nparticles; i++)
                     {
                         if (i < Nboundary)
@@ -1331,7 +1363,24 @@ int main ()
                         {
                             Type = "fluid";
                         }
-                        file << i << "," << r[i] << "," << z[i] << "," << "," << rho[i] << "," << drhodt[i] << "," << pressure[i] << "," << "," << u_r[i] << "," << u_z[i] << "," << "," << du_rdt[i] << "," << du_zdt[i] << "," << Type << endl;
+                        //file << i << "," << r[i] << "," << z[i] << "," << "," << rho[i] << "," << drhodt[i] << "," << pressure[i] << "," << "," << u_r[i] << "," << u_z[i] << "," << "," << du_rdt[i] << "," << du_zdt[i] << "," << Type << endl;
+                        file << i << ","
+                            << r[i] << ","
+                            << z[i] << ",,"
+                            << rho[i] << ","
+                            << drhodt[i] << ","
+                            << pressure[i] << ",,"
+                            << u_r[i] << ","
+                            << u_z[i] << ","
+                            << sqrt(u_r[i]*u_r[i] + u_z[i]*u_z[i]) <<",,"
+                            << du_rdt[i] << ","
+                            << du_zdt[i] << ","
+                            << du_rdt[i]
+                                + pressure[i]/
+                                (rho[i]*axisRadius(r[i])) << ","
+                            << du_zdt[i] - g << ","
+                            << Type
+                            << endl;
                     }
            
                 file.close();
@@ -1412,7 +1461,8 @@ int main ()
             
             for (int i = 0; i < Nparticles; i++)
             {
-                pressurehalf[i] = B*(pow(rhohalf[i]/rho0, gammaEOS) - 1.0);
+                //pressurehalf[i] = B*(pow(rhohalf[i]/rho0, gammaEOS) - 1.0);
+                pressurehalf[i] = max(0.0,B*(pow(rhohalf[i]/rho0, gammaEOS) - 1.0));
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1431,24 +1481,56 @@ int main ()
 
                 for (int j = 0; j < Nparticles; j++)
                 {
-
-
    
                     double piPair = pressurehalf[i];
                     double pjPair = pressurehalf[j];
 
-                    if (j < Nboundary)
+                    /*if (j < Nboundary)
                     {
                         piPair = max(piPair, 0.0);
                         //pjPair = max(pjPair, 0.0);
 
+                        // Bottom wall
                         if (zhalf[j] < 0.0)
                         {
-                            const double wallpressure = 0.5*(rhohalf[i]+rhohalf[j])*c0*max(0.0, u_zhalf[j]-u_zhalf[i]);
-                            pjPair += wallpressure;
+                            pjPair +=
+                                0.5*(rhohalf[i] + rhohalf[j])*c0*
+                                max(0.0, u_zhalf[j] - u_zhalf[i]);
+                        }
+
+                        // Outer radial wall
+                        if (rhalf[j] > tankradius)
+                        {
+                            pjPair +=
+                                0.5*(rhohalf[i] + rhohalf[j])*c0*
+                                max(0.0, u_rhalf[i] - u_rhalf[j]);
                         }
 
                        
+                    }*/
+
+                    if (j < Nboundary)
+                    {
+                        // Bottom wall: reflected-wall acoustic pressure
+                        if (zhalf[j] < 0.0)
+                        {
+                            piPair = max(
+                                0.0,
+                                0.5*(pressurehalf[i] + pressurehalf[j])
+                                + 0.5*(rhohalf[i] + rhohalf[j])*c0
+                                *max(0.0, u_zhalf[j] - u_zhalf[i])
+                            );
+
+                            pjPair = piPair;
+                        }
+
+                        // Keep your existing outer-wall treatment for now.
+                        if (rhalf[j] > tankradius)
+                        {
+                            pjPair +=
+                                0.5*(rhohalf[i] + rhohalf[j])*c0
+                                *max(0.0, u_rhalf[i] - u_rhalf[j]);
+                        }
                     }
 
                     // Pass piPair and pjPair into both the real
@@ -1503,7 +1585,7 @@ int main ()
                             du_rdthalf[i],
                             du_zdthalf[i]);
 
-                        }
+                    }
                 }
 
                    
@@ -1596,7 +1678,7 @@ int main ()
 
                 if (znew[i] < -0.5*dp || rnew[i] > tankradius + 0.5*dp)
                 {
-                    cerr << "First particle crossing"
+                    cout << "First particle crossing"
                         << "  time = " << (n + 1)*dt
                         << "  particle = " << i
                         << "  old r = " << r[i]
@@ -1622,7 +1704,7 @@ int main ()
                     !isfinite(rhonew[i]) ||
                     rhonew[i] <= 0.0)
                 {
-                    cerr << "Invalid fluid state"
+                    cout << "Invalid fluid state"
                         << "  time = " << (n + 1)*dt
                         << "  particle = " << i
                         << "  r = " << rnew[i]

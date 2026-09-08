@@ -17,7 +17,7 @@ string type;
 // Timestep
 // --------------------------------------------
 
-const double dt = 0.001; 
+const double dt = 0.0005; 
 const double Totaltime= 20.0;
 const int Nt = Totaltime / dt;
 
@@ -26,14 +26,14 @@ const int Nt = Totaltime / dt;
 // Geometry
 // ------------------------------------------------------------
 
-const double tanklength = 25.0;
-const double tankheight = 10.0;
+const double tanklength = 24.0;
+const double tankheight = 15.0;
 
-const double waterlength = 15.0;
+const double waterlength = 6.0;
 const double freeboard = 2.0;
-const double waterheight = tankheight-freeboard;
+const double waterheight = 12;
 
-const double dp = 0.5;
+const double dp = 0.25;
 
 const double boundthick = dp * 3;
 
@@ -1684,7 +1684,51 @@ int main ()
                 u[i] = unew[i];
                 v[i] = vnew[i];
                 rho[i] = rhonew[i];
+
                 
+                
+            }
+
+            for (int i = Nboundary; i < Nparticles; i++)
+            {
+                if (ynew[i] < -0.5*dp || xnew[i] > tanklength + 0.5*dp)
+                {
+                    cout << "First particle crossing"
+                        << "  time = " << (n + 1)*dt
+                        << "  particle = " << i
+                        << "  old x = " << x[i]
+                        << "  new x = " << xnew[i]
+                        << "  old y = " << y[i]
+                        << "  new y = " << ynew[i]
+                        << "  old u = " << u[i]
+                        << "  new u = " << unew[i]
+                        << "  rho = " << rhonew[i]
+                        << "  pressureHalf = " << pressurehalf[i]
+                        << "  pairAyHalf = " << dvdthalf[i]
+                        << endl;
+
+                    return 1;
+                }
+
+                if (!isfinite(xnew[i]) ||
+                    !isfinite(ynew[i]) ||
+                    !isfinite(unew[i]) ||
+                    !isfinite(vnew[i]) ||
+                    !isfinite(rhonew[i]) ||
+                    rhonew[i] <= 0.0)
+                {
+                    cout << "Invalid fluid state"
+                        << "  time = " << (n + 1)*dt
+                        << "  particle = " << i
+                        << "  x = " << xnew[i]
+                        << "  y = " << ynew[i]
+                        << "  u = " << unew[i]
+                        << "  v = " << vnew[i]
+                        << "  rho = " << rhonew[i]
+                        << endl;
+
+                    return 1;
+                }
             }
 
         }

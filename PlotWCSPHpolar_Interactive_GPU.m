@@ -1,0 +1,532 @@
+function PlotWCSPHpolar_Interactive_GPU
+% GPU-cached interactive viewer for the 17-column WCSPHpolar C++ output.
+% C++ values are only cached and displayed; this function does not
+% recompute any SPH quantity.
+
+%% User settings
+% simulationFolder = ...
+%     "WCSPHpolar_dp_0.250000_h_0.500000_Nparticles_2989_wendland";
+simulationFolder = ...
+    "WCSPHpolar_dp_0.500000_h_1.000000_Nparticles_1768_wendland";
+
+plotVariable = "velocity";
+manualColorLimits = [];        % [] = automatic for each selected parameter.
+colorPercentiles = [5 95];     % Narrow range to make differences visible.
+playbackFPS = 60;
+useGPU = true;
+maximumGPUMemoryFraction = 0.60;
+
+%% Find and sort C++ frames
+files = dir(fullfile(simulationFolder,"WCSPHpolar_hdp_*_t_*.csv"));
+
+if isempty(files)
+    error("No C++ timestep CSV files found in:\n%s",simulationFolder);
+end
+
+numberOfFrames = numel(files);
+time = nan(numberOfFrames,1);
+
+for k = 1:numberOfFrames
+    token = regexp(files(k).name, ...
+        '_t_([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\.csv$', ...
+        'tokens','once');
+
+    if isempty(token)
+        error("Could not read time from %s",files(k).name);
+    end
+
+    time(k) = str2double(token{1});
+end
+
+[time,order] = sort(time);
+files = files(order);
+firstFilename = fullfile(files(1).folder,files(1).name);
+
+%% Exact 17-column C++ format
+opts = delimitedTextImportOptions("NumVariables",17);
+opts.DataLines = [7 Inf];
+opts.Delimiter = ",";
+opts.VariableNames = ...
+    ["ID","r","z","empty1", ...
+     "rho","drhodt","pressure","empty2", ...
+     "u_r","u_z","velocity","empty3", ...
+     "pairAr","pairAz","totalAr","totalAz","Type"];
+opts.VariableTypes = ...
+    ["double","double","double","string", ...
+     "double","double","double","string", ...
+     "double","double","double","string", ...
+     "double","double","double","double","string"];
+
+cacheNames = ...
+    ["r","z","rho","drhodt","pressure","u_r","u_z", ...
+     "velocity","pairAr","pairAz","totalAr","totalAz"];
+allowedVariables = cacheNames(3:end);
+parameterLabels = ...
+    ["Density","Density rate","Pressure","Radial velocity", ...
+     "Vertical velocity","Velocity magnitude", ...
+     "Pair radial acceleration","Pair vertical acceleration", ...
+     "Total radial acceleration","Total vertical acceleration"];
+colorLabels = ...
+    ["Density (kg/m^3)","Density rate (kg/m^3/s)","Pressure (Pa)", ...
+     "Radial velocity (m/s)","Vertical velocity (m/s)", ...
+     "Velocity magnitude (m/s)", ...
+     "Pair radial acceleration (m/s^2)", ...
+     "Pair vertical acceleration (m/s^2)", ...
+     "Total radial acceleration (m/s^2)", ...
+     "Total vertical acceleration (m/s^2)"];
+
+if ~any(plotVariable == allowedVariables)
+    error("plotVariable must be one of: %s",strjoin(allowedVariables,", "));
+end
+
+fieldColumn = find(cacheNames == plotVariable,1);
+initialVariableIndex = find(allowedVariables == plotVariable,1);
+T0 = readtable(firstFilename,opts);
+
+%% Fixed particle identities
+ID0 = T0.ID;
+type0 = lower(strtrim(string(T0.Type)));
+boundary = type0 == "boundary";
+fluid = type0 == "fluid";
+boundaryRows = find(boundary);
+fluidRows = find(fluid);
+numberOfParticles = height(T0);
+
+if any(~(boundary | fluid))
+    error("Invalid C++ Type column in the first frame.");
+end
+
+if ~isequal(ID0,(0:numberOfParticles-1)')
+    error("C++ particle IDs are not sequential.");
+end
+
+metadata = readmatrix(firstFilename,'Range','A3:D3');
+dp = metadata(3);
+boundthick = 3*dp;
+
+%% Initialise GPU and allocate complete numerical frame cache
+gpuEnabled = false;
+gpuInfo = [];
+
+if useGPU
+    try
+        gpuInfo = gpuDevice;
+        gpuEnabled = true;
+    catch gpuError
+        warning("GPU unavailable; using a CPU frame cache instead.\n%s", ...
+            gpuError.message);
+    end
+end
+
+numberOfCachedFields = numel(cacheNames);
+cacheBytes = double(numberOfParticles)*double(numberOfCachedFields)* ...
+    double(numberOfFrames)*8;
+
+if gpuEnabled && ...
+        cacheBytes > maximumGPUMemoryFraction*double(gpuInfo.AvailableMemory)
+    warning("The frame cache needs %.2f GiB and exceeds the selected %.0f%% GPU-memory limit. Using CPU memory instead.", ...
+        cacheBytes/1024^3,100*maximumGPUMemoryFraction);
+    gpuEnabled = false;
+end
+
+if gpuEnabled
+    frameGPU = gpuArray.zeros( ...
+        numberOfParticles,numberOfCachedFields,numberOfFrames,'double');
+    frameCPU = [];
+    fprintf("GPU cache enabled on %s (%.2f GiB).\n", ...
+        gpuInfo.Name,cacheBytes/1024^3);
+else
+    frameCPU = zeros( ...
+        numberOfParticles,numberOfCachedFields,numberOfFrames,'double');
+    frameGPU = [];
+    fprintf("CPU cache enabled (%.2f GiB).\n",cacheBytes/1024^3);
+end
+
+%% Read each CSV once, validate it, and fill the cache
+progressInterval = max(1,floor(numberOfFrames/20));
+
+for k = 1:numberOfFrames
+    if k == 1
+        T = T0;
+    else
+        filename = fullfile(files(k).folder,files(k).name);
+        T = readtable(filename,opts);
+    end
+
+    if height(T) ~= numberOfParticles || ~isequal(T.ID,ID0)
+        error("Particle layout changed in %s",files(k).name);
+    end
+
+    if ~isequal(lower(strtrim(string(T.Type))),type0)
+        error("Particle Type changed in %s",files(k).name);
+    end
+
+    frameValues = [T.r,T.z,T.rho,T.drhodt,T.pressure,T.u_r,T.u_z, ...
+        T.velocity,T.pairAr,T.pairAz,T.totalAr,T.totalAz];
+
+    if gpuEnabled
+        frameGPU(:,:,k) = gpuArray(frameValues);
+    else
+        frameCPU(:,:,k) = frameValues;
+    end
+
+    if mod(k,progressInterval) == 0 || k == numberOfFrames
+        fprintf("Loaded frame %d of %d.\n",k,numberOfFrames);
+    end
+end
+
+
+clear T frameValues T0;
+
+%% Display-only wall at the symmetry axis
+firstFrame = getFrame(1);
+leftWallR = (-0.5*dp:-dp:-boundthick+0.5*dp)';
+leftWallZ = (min(firstFrame(:,2)):dp:max(firstFrame(:,2)))';
+[leftRGrid,leftZGrid] = meshgrid(leftWallR,leftWallZ);
+leftWallRPlot = leftRGrid(:);
+leftWallZPlot = leftZGrid(:);
+
+%% Initial field label and colour limits
+colorLabel = colorLabels(initialVariableIndex);
+fieldLimitCache = nan(numberOfCachedFields,2);
+[fieldMin,fieldMax] = getColorLimits(fieldColumn);
+
+%% Figure
+fig = figure('Color','w','Position',[80 80 1250 650], ...
+    'Name','GPU-Cached Interactive Axisymmetric WCSPH Viewer', ...
+    'NumberTitle','off');
+ax = axes(fig,'Position',[0.07 0.17 0.80 0.76]);
+hold(ax,'on');
+
+hFluid = scatter(ax,firstFrame(fluid,1),firstFrame(fluid,2),30, ...
+    firstFrame(fluid,fieldColumn),'filled','MarkerEdgeColor','none');
+hBoundary = scatter(ax, ...
+    [firstFrame(boundary,1);leftWallRPlot], ...
+    [firstFrame(boundary,2);leftWallZPlot],150,[0 0 0],'filled');
+
+axis(ax,'equal');
+xlim(ax,[min(leftWallRPlot)-dp,max(firstFrame(:,1))+dp]);
+ylim(ax,[min(firstFrame(:,2))-dp,max(firstFrame(:,2))+dp]);
+xlabel(ax,'r (m)');
+ylabel(ax,'z (m)');
+grid(ax,'off');
+box(ax,'off');
+colormap(ax,turbo);
+c = colorbar(ax);
+c.Label.String = colorLabel;
+caxis(ax,[fieldMin fieldMax]);
+titleHandle = title(ax,'');
+
+%% Navigation buttons
+firstButton = uicontrol(fig,'Style','pushbutton','String','|<', ...
+    'Units','normalized','Position',[0.07 0.055 0.055 0.055]);
+backButton = uicontrol(fig,'Style','pushbutton','String','<', ...
+    'Units','normalized','Position',[0.13 0.055 0.055 0.055]);
+playButton = uicontrol(fig,'Style','pushbutton','String','Play', ...
+    'Units','normalized','Position',[0.19 0.055 0.075 0.055]);
+nextButton = uicontrol(fig,'Style','pushbutton','String','>', ...
+    'Units','normalized','Position',[0.27 0.055 0.055 0.055]);
+lastButton = uicontrol(fig,'Style','pushbutton','String','>|', ...
+    'Units','normalized','Position',[0.33 0.055 0.055 0.055]);
+historyButton = uicontrol(fig,'Style','pushbutton','String','History', ...
+    'Units','normalized','Position',[0.395 0.055 0.075 0.055]);
+
+parameterText = uicontrol(fig,'Style','text','String','Displayed parameter:', ...
+    'BackgroundColor','w','HorizontalAlignment','right', ...
+    'Units','normalized','Position',[0.49 0.012 0.13 0.035]);
+
+parameterMenu = uicontrol(fig,'Style','popupmenu', ...
+    'String',cellstr(parameterLabels),'Value',initialVariableIndex, ...
+    'BackgroundColor','w','Units','normalized', ...
+    'Position',[0.625 0.012 0.235 0.043], ...
+    'TooltipString','Choose the C++ parameter used to colour fluid particles');
+
+if numberOfFrames > 1
+    sliderStep = [1/(numberOfFrames-1),min(1,10/(numberOfFrames-1))];
+else
+    sliderStep = [1 1];
+end
+
+frameSlider = uicontrol(fig,'Style','slider', ...
+    'Min',1,'Max',max(1,numberOfFrames),'Value',1, ...
+    'SliderStep',sliderStep,'Units','normalized', ...
+    'Position',[0.49 0.065 0.32 0.035]);
+frameLabel = uicontrol(fig,'Style','text','String','', ...
+    'BackgroundColor','w','HorizontalAlignment','left', ...
+    'Units','normalized','Position',[0.82 0.052 0.16 0.060]);
+
+%% State and timer
+playTimer = timer('ExecutionMode','fixedSpacing', ...
+    'Period',1/playbackFPS,'BusyMode','drop','TimerFcn',@timerTick);
+
+state.index = 1;
+state.currentFrame = firstFrame;
+state.selectedID = [];
+state.fluidRows = fluidRows;
+guidata(fig,state);
+
+firstButton.Callback = @(~,~)showFrame(1);
+backButton.Callback = @(~,~)stepFrame(-1);
+playButton.Callback = @togglePlay;
+nextButton.Callback = @(~,~)stepFrame(1);
+lastButton.Callback = @(~,~)showFrame(numberOfFrames);
+historyButton.Callback = @showSelectedHistory;
+parameterMenu.Callback = @parameterChanged;
+frameSlider.Callback = @sliderMoved;
+fig.WindowKeyPressFcn = @keyPressed;
+fig.CloseRequestFcn = @closeViewer;
+
+dataCursor = datacursormode(fig);
+dataCursor.Enable = 'on';
+dataCursor.UpdateFcn = @particleDataTip;
+
+showFrame(1);
+
+%% Nested functions
+    function [fieldMinLocal,fieldMaxLocal] = getColorLimits(column)
+        if ~isempty(manualColorLimits)
+            fieldMinLocal = manualColorLimits(1);
+            fieldMaxLocal = manualColorLimits(2);
+            return;
+        end
+
+        if all(isfinite(fieldLimitCache(column,:)))
+            fieldMinLocal = fieldLimitCache(column,1);
+            fieldMaxLocal = fieldLimitCache(column,2);
+            return;
+        end
+
+        if gpuEnabled
+            values = reshape(frameGPU(fluid,column,:),[],1);
+            values = sort(values(isfinite(values)));
+        else
+            values = reshape(frameCPU(fluid,column,:),[],1);
+            values = sort(values(isfinite(values)));
+        end
+
+        numberOfValues = numel(values);
+        if numberOfValues == 0
+            fieldMinLocal = 0.0;
+            fieldMaxLocal = 1.0;
+        else
+            lowerIndex = max(1,round( ...
+                colorPercentiles(1)*numberOfValues/100));
+            upperIndex = min(numberOfValues,round( ...
+                colorPercentiles(2)*numberOfValues/100));
+
+            if gpuEnabled
+                fieldMinLocal = gather(values(lowerIndex));
+                fieldMaxLocal = gather(values(upperIndex));
+            else
+                fieldMinLocal = values(lowerIndex);
+                fieldMaxLocal = values(upperIndex);
+            end
+        end
+
+        if cacheNames(column) == "velocity"
+            fieldMinLocal = 0.0;
+        end
+
+        if fieldMinLocal == fieldMaxLocal
+            fieldMaxLocal = fieldMinLocal + max(1.0,abs(fieldMinLocal)*0.01);
+        end
+
+        fieldLimitCache(column,:) = [fieldMinLocal fieldMaxLocal];
+    end
+
+    function frame = getFrame(frameIndex)
+        if gpuEnabled
+            frame = gather(frameGPU(:,:,frameIndex));
+        else
+            frame = frameCPU(:,:,frameIndex);
+        end
+    end
+
+    function showFrame(requestedIndex)
+        requestedIndex = max(1,min(numberOfFrames,round(requestedIndex)));
+        frame = getFrame(requestedIndex);
+
+        rFluid = frame(fluid,1);
+        zFluid = frame(fluid,2);
+        fieldFluid = frame(fluid,fieldColumn);
+        valid = isfinite(rFluid) & isfinite(zFluid) & isfinite(fieldFluid);
+        rFluid(~valid) = NaN;
+        zFluid(~valid) = NaN;
+        fieldFluid(~valid) = NaN;
+
+        set(hFluid,'XData',rFluid,'YData',zFluid,'CData',fieldFluid);
+        set(hBoundary,'XData',[frame(boundary,1);leftWallRPlot], ...
+            'YData',[frame(boundary,2);leftWallZPlot]);
+
+        titleHandle.String = sprintf( ...
+            'Axisymmetric SPH Radial Dam-Break (single side), t = %.3f s', ...
+            time(requestedIndex));
+        frameSlider.Value = requestedIndex;
+        frameLabel.String = sprintf('Frame %d / %d\nt = %.3f s', ...
+            requestedIndex,numberOfFrames,time(requestedIndex));
+
+        currentState = guidata(fig);
+        currentState.index = requestedIndex;
+        currentState.currentFrame = frame;
+        guidata(fig,currentState);
+        drawnow limitrate;
+    end
+
+    function stepFrame(direction)
+        stopPlayback;
+        currentState = guidata(fig);
+        showFrame(currentState.index+direction);
+    end
+
+    function togglePlay(~,~)
+        if strcmp(playTimer.Running,'off')
+            playButton.String = 'Pause';
+            start(playTimer);
+        else
+            stopPlayback;
+        end
+    end
+
+    function timerTick(~,~)
+        if ~isvalid(fig), return; end
+        currentState = guidata(fig);
+        if currentState.index >= numberOfFrames
+            stopPlayback;
+        else
+            showFrame(currentState.index+1);
+        end
+    end
+
+    function stopPlayback
+        if strcmp(playTimer.Running,'on'), stop(playTimer); end
+        if isvalid(playButton), playButton.String = 'Play'; end
+    end
+
+    function sliderMoved(source,~)
+        stopPlayback;
+        showFrame(source.Value);
+    end
+
+    function parameterChanged(source,~)
+        stopPlayback;
+        selectedIndex = source.Value;
+        plotVariable = allowedVariables(selectedIndex);
+        fieldColumn = find(cacheNames == plotVariable,1);
+        c.Label.String = colorLabels(selectedIndex);
+        [newFieldMin,newFieldMax] = getColorLimits(fieldColumn);
+        caxis(ax,[newFieldMin newFieldMax]);
+
+        currentState = guidata(fig);
+        showFrame(currentState.index);
+    end
+
+    function keyPressed(~,event)
+        switch event.Key
+            case 'space',      togglePlay([],[]);
+            case 'leftarrow',  stepFrame(-1);
+            case 'rightarrow', stepFrame(1);
+            case 'home',       stopPlayback; showFrame(1);
+            case 'end',        stopPlayback; showFrame(numberOfFrames);
+        end
+    end
+
+    function output = particleDataTip(~,event)
+        currentState = guidata(fig);
+        dataIndex = event.DataIndex;
+        frame = currentState.currentFrame;
+
+        if isequal(event.Target,hFluid)
+            if dataIndex < 1 || dataIndex > numel(fluidRows)
+                output = {'No fluid particle selected'};
+                return;
+            end
+
+            row = fluidRows(dataIndex);
+            particleType = 'Fluid';
+
+        elseif isequal(event.Target,hBoundary)
+            if dataIndex > numel(boundaryRows)
+                currentState.selectedID = [];
+                guidata(fig,currentState);
+                output = { ...
+                    'Type: display-only axis wall', ...
+                    sprintf('r: %.6g m',event.Position(1)), ...
+                    sprintf('z: %.6g m',event.Position(2)), ...
+                    'No C++ particle ID'};
+                return;
+            end
+
+            if dataIndex < 1
+                output = {'No boundary particle selected'};
+                return;
+            end
+
+            row = boundaryRows(dataIndex);
+            particleType = 'Boundary';
+        else
+            output = {'Unknown plotted object'};
+            return;
+        end
+
+        currentState.selectedID = ID0(row);
+        guidata(fig,currentState);
+
+        output = { ...
+            sprintf('Type: %s',particleType), ...
+            sprintf('ID: %d',ID0(row)), ...
+            sprintf('r: %.6g m',frame(row,1)), ...
+            sprintf('z: %.6g m',frame(row,2)), ...
+            sprintf('velocity: %.6g m/s',frame(row,8)), ...
+            sprintf('u_r: %.6g m/s',frame(row,6)), ...
+            sprintf('u_z: %.6g m/s',frame(row,7)), ...
+            sprintf('rho: %.6g kg/m^3',frame(row,3)), ...
+            sprintf('pressure: %.6g Pa',frame(row,5)), ...
+            sprintf('totalAr: %.6g m/s^2',frame(row,11)), ...
+            sprintf('totalAz: %.6g m/s^2',frame(row,12))};
+    end
+
+    function showSelectedHistory(~,~)
+        stopPlayback;
+        currentState = guidata(fig);
+
+        if isempty(currentState.selectedID)
+            errordlg('Pause and click a physical particle first.', ...
+                'No particle selected');
+            return;
+        end
+
+        selectedID = currentState.selectedID;
+        row = find(ID0 == selectedID,1);
+        historyColumns = [1 2 6 7 5 12];
+        history = zeros(numberOfFrames,numel(historyColumns));
+
+        for columnIndex = 1:numel(historyColumns)
+            if gpuEnabled
+                history(:,columnIndex) = gather(reshape( ...
+                    frameGPU(row,historyColumns(columnIndex),:),[],1));
+            else
+                history(:,columnIndex) = reshape( ...
+                    frameCPU(row,historyColumns(columnIndex),:),[],1);
+            end
+        end
+
+        historyFigure = figure('Color','w','Position',[130 60 1100 760]);
+        tiledlayout(historyFigure,3,2, ...
+            'TileSpacing','compact','Padding','compact');
+        nexttile; plot(time,history(:,1),'LineWidth',1.3); ylabel('r (m)'); grid on;
+        nexttile; plot(time,history(:,2),'LineWidth',1.3); ylabel('z (m)'); grid on;
+        nexttile; plot(time,history(:,3),'LineWidth',1.3); ylabel('u_r (m/s)'); grid on;
+        nexttile; plot(time,history(:,4),'LineWidth',1.3); ylabel('u_z (m/s)'); grid on;
+        nexttile; plot(time,history(:,5),'LineWidth',1.3); ...
+            xlabel('Time (s)'); ylabel('Pressure (Pa)'); grid on;
+        nexttile; plot(time,history(:,6),'LineWidth',1.3); yline(0,'k--'); ...
+            xlabel('Time (s)'); ylabel('Total a_z (m/s^2)'); grid on;
+        sgtitle(sprintf('C++ History for Particle ID %d',selectedID));
+    end
+
+    function closeViewer(~,~)
+        stopPlayback;
+        if isvalid(playTimer), delete(playTimer); end
+        delete(fig);
+    end
+end

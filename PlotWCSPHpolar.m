@@ -7,895 +7,505 @@ close all;
 % ==========================================================
 
 simulationFolder = ...
-    "WCSPHpolar_dp_0.250000_h_0.500000_Nparticles_2989_wendland";
+    "WCSPHpolar_dp_0.500000_h_1.000000_Nparticles_859_wendland";
 
- plotVariable = "pressure";
-% plotVariable = "density";
-% plotVariable = "velocity";
+% These choices are read directly from the C++ CSV columns:
+% "rho", "drhodt", "pressure", "u_r", "u_z",
+% "pairAr", "pairAz", "totalAr", or "totalAz".
+% plotVariable = "pressure";
+plotVariable = "velocity";
+
+% Set [] to disable particle tracking.
+trackedParticleID =858;
 
 saveVideo = true;
+saveParticleHistory = true;
 
-videoName = simulationFolder + "_single_side.mp4";
+% Leave empty to use the first-frame fluid range.
+% Example for vertical acceleration: colorLimits = [-50 50];
+colorLimits = [];
 
-
-%% =========================================================
-% READ PARAMETERS FROM FOLDER NAME
-% ==========================================================
-
-folderName = string(simulationFolder);
-
-tokens = regexp( ...
-    folderName, ...
-    'WCSPHpolar_dp_([0-9.]+)_h_([0-9.]+)_Nparticles_([0-9]+)_([A-Za-z]+)$', ...
-    'tokens', ...
-    'once');
-
-if isempty(tokens)
-    error("Folder name does not match the C++ format.");
-end
-
-dp = str2double(tokens{1});
-h = str2double(tokens{2});
-NparticlesFolder = str2double(tokens{3});
-kernel = string(tokens{4});
-
-hdp = h/dp;
+fluidMarkerSize = 30;
+boundaryMarkerSize = 150;
+videoFrameRate = 50;
 
 
 %% =========================================================
-% GEOMETRY
-% Same as C++
+% FIND C++ OUTPUT FILES
 % ==========================================================
 
-tanklength = 25.0;
-tankheight = 10.0;
-
-waterlength = 15.0;
-
-freeboard = 2.0;
-waterheight = tankheight - freeboard;
-
-boundthick = 3*dp;
-
-
-%% =========================================================
-% FIND OUTPUT CSV FILES
-% ==========================================================
-
-pattern = sprintf( ...
-    "WCSPHpolar_hdp_%.6f_t_*.csv", ...
-    hdp);
-
-files = dir( ...
-    fullfile(simulationFolder, pattern));
+files = dir(fullfile( ...
+    simulationFolder, ...
+    "WCSPHpolar_hdp_*_t_*.csv"));
 
 if isempty(files)
-    error("No CSV files found.");
+    error("No C++ timestep CSV files were found in:\n%s", ...
+        simulationFolder);
 end
 
+time = nan(numel(files),1);
 
-%% =========================================================
-% EXTRACT TIME FROM FILENAMES
-% ==========================================================
-
-time = zeros(length(files),1);
-
-for n = 1:length(files)
-
-    timeToken = regexp( ...
-        files(n).name, ...
-        '_t_([0-9]+\.[0-9]+)', ...
+for k = 1:numel(files)
+    token = regexp( ...
+        files(k).name, ...
+        '_t_([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\.csv$', ...
         'tokens', ...
         'once');
 
-    if isempty(timeToken)
-
-        error( ...
-            "Could not extract time from %s", ...
-            files(n).name);
-
+    if isempty(token)
+        error("Could not read time from filename: %s",files(k).name);
     end
 
-    time(n) = str2double(timeToken{1});
-
+    time(k) = str2double(token{1});
 end
 
-
-%% Sort according to physical time
-
-[time, order] = sort(time);
-
+[time,order] = sort(time);
 files = files(order);
 
 
-fprintf("\n");
-fprintf("OUTPUT FILES\n");
-fprintf("--------------------------------------\n");
-
-fprintf("Timesteps    = %d\n", length(files));
-fprintf("Initial time = %.6f s\n", time(1));
-fprintf("Final time   = %.6f s\n", time(end));
-
-
 %% =========================================================
-% CSV IMPORT SETTINGS
+% EXACT C++ CSV FORMAT
 %
-% C++ CSV structure:
-%
-% line 1 = h/dp
-% line 2 = metadata header
-% line 3 = metadata values
-% line 4 = blank
-% line 5 = time
-% line 6 = particle variable names
-% line 7 = first particle
-%
-% Columns:
-%
-% 1  ID
-% 2  x
-% 3  y
-% 4  empty
-% 5  rho
-% 6  drhodt
-% 7  pressure
-% 8  empty
-% 9  u
-% 10 v
-% 11 empty
-% 12 dudt
-% 13 dvdt
-% 14 type
+% Line 1: h/dp
+% Line 2: metadata names
+% Line 3: L2 pressure, KE, dp, Nfluid
+% Line 4: blank
+% Line 5: time
+% Line 6: particle column names
+% Line 7 onward: particle data
 % ==========================================================
 
-opts = delimitedTextImportOptions("NumVariables",14);
-
+opts = delimitedTextImportOptions("NumVariables",17);
 opts.DataLines = [7 Inf];
 opts.Delimiter = ",";
 
 opts.VariableNames = ...
-    ["ID", ...
-     "x", ...
-     "y", ...
-     "empty1", ...
-     "rho", ...
-     "drhodt", ...
-     "pressure", ...
-     "empty2", ...
-     "u", ...
-     "v", ...
-     "empty3", ...
-     "dudt", ...
-     "dvdt", ...
-     "type"];
+    ["ID","r","z","empty1", ...
+     "rho","drhodt","pressure","empty2", ...
+     "u_r","u_z","velocity","empty3", ...
+     "pairAr","pairAz","totalAr","totalAz","Type"];
 
 opts.VariableTypes = ...
-    ["double", ...
-     "double", ...
-     "double", ...
-     "string", ...
-     "double", ...
-     "double", ...
-     "double", ...
-     "string", ...
-     "double", ...
-     "double", ...
-     "string", ...
-     "double", ...
-     "double", ...
-     "string"];
+    ["double","double","double","string", ...
+     "double","double","double","string", ...
+     "double","double","double","string", ...
+     "double","double","double","double","string"];
 
 
 %% =========================================================
-% READ FIRST TIMESTEP
+% READ FIRST C++ FILE AND METADATA
 % ==========================================================
 
-filename = fullfile( ...
-    files(1).folder, ...
-    files(1).name);
+firstFilename = fullfile(files(1).folder,files(1).name);
+T0 = readtable(firstFilename,opts);
 
-T = readtable(filename, opts);
+metadata0 = readmatrix(firstFilename,'Range','A3:D3');
+hdpData = readmatrix(firstFilename,'Range','A1:B1');
 
+if numel(metadata0) < 4 || numel(hdpData) < 2
+    error("The C++ metadata rows are incomplete in %s",files(1).name);
+end
 
-%% =========================================================
-% READ INITIAL PARTICLE DATA
-% ==========================================================
+dp = metadata0(3);
+NfluidMetadata = round(metadata0(4));
+hdp = hdpData(2);
+h = hdp*dp;
 
-ID0 = T.ID;
-
-x0 = T.x;
-y0 = T.y;
-
-rhoInitial = T.rho;
-drhodtInitial = T.drhodt;
-pressureInitial = T.pressure;
-
-uInitial = T.u;
-vInitial = T.v;
-
-type0 = lower(strtrim(string(T.type)));
-
-
-%% =========================================================
-% PARTICLE IDENTITY
-%
-% Particle identity now comes DIRECTLY from C++.
-% No x/y criterion.
-% No geometry reconstruction.
-% ==========================================================
+ID0 = T0.ID;
+type0 = lower(strtrim(string(T0.Type)));
 
 boundary = type0 == "boundary";
 fluid = type0 == "fluid";
 
+if any(~(boundary | fluid))
+    badRows = find(~(boundary | fluid));
+    error("Invalid Type entry in first CSV at data row %d.",badRows(1));
+end
 
-%% =========================================================
-% PARTICLE COUNTS
-% ==========================================================
-
-Nparticles = height(T);
-
+Nparticles = height(T0);
 Nboundary = sum(boundary);
 Nfluid = sum(fluid);
 
-
-fprintf("\n");
-fprintf("PARTICLE INFORMATION\n");
-fprintf("--------------------------------------\n");
-
-fprintf("Boundary particles = %d\n", Nboundary);
-fprintf("Fluid particles    = %d\n", Nfluid);
-fprintf("Total particles    = %d\n", Nparticles);
-
-
-%% =========================================================
-% CHECK AGAINST FOLDER NAME
-% ==========================================================
-
-if Nparticles ~= NparticlesFolder
-
-    error( ...
-        "CSV contains %d particles but folder says %d.", ...
-        Nparticles, ...
-        NparticlesFolder);
-
+if Nfluid ~= NfluidMetadata
+    error("CSV Type column gives %d fluid particles, but metadata gives %d.", ...
+        Nfluid,NfluidMetadata);
 end
 
-
-%% =========================================================
-% CHECK PARTICLE IDs
-%
-% Expected C++ IDs:
-%
-% 0, 1, 2, ..., Nparticles-1
-% ==========================================================
-
-expectedID = (0:Nparticles-1)';
-
-if ~isequal(ID0, expectedID)
-
-    warning( ...
-        "Particle IDs are not sequential from 0 to %d.", ...
-        Nparticles-1);
-
+if ~isequal(ID0,(0:Nparticles-1)')
+    error("Particle IDs must be sequential from 0 to %d.",Nparticles-1);
 end
 
+allowedVariables = ...
+    ["rho","drhodt","pressure","u_r","u_z","velocity", ...
+    "pairAr","pairAz","totalAr","totalAz"];
 
-%% =========================================================
-% DISPLAY ID RANGES
-% ==========================================================
+if ~any(plotVariable == allowedVariables)
+    error("plotVariable must be one of: %s", ...
+        strjoin(allowedVariables,", "));
+end
 
-boundaryIDs = ID0(boundary);
-fluidIDs = ID0(fluid);
-
-fprintf("\n");
-fprintf("PARTICLE ID RANGES\n");
+fprintf("\nC++ OUTPUT INFORMATION\n");
 fprintf("--------------------------------------\n");
-
-fprintf( ...
-    "Boundary IDs : %d - %d\n", ...
-    min(boundaryIDs), ...
-    max(boundaryIDs));
-
-fprintf( ...
-    "Fluid IDs    : %d - %d\n", ...
-    min(fluidIDs), ...
-    max(fluidIDs));
+fprintf("Files              = %d\n",numel(files));
+fprintf("Initial time       = %.6f s\n",time(1));
+fprintf("Final time         = %.6f s\n",time(end));
+fprintf("dp                 = %.6f m\n",dp);
+fprintf("h                  = %.6f m\n",h);
+fprintf("Boundary particles = %d\n",Nboundary);
+fprintf("Fluid particles    = %d\n",Nfluid);
+fprintf("Total particles    = %d\n",Nparticles);
 
 
 %% =========================================================
-% INITIAL PARTICLE CHECK
+% FIELD AND LABEL DIRECTLY FROM C++ COLUMN
 % ==========================================================
 
-firstBoundaryRow = find(boundary,1,'first');
-lastBoundaryRow  = find(boundary,1,'last');
-
-firstFluidRow = find(fluid,1,'first');
-
-
-fprintf("\n");
-fprintf("INITIAL PARTICLE CHECK\n");
-fprintf("--------------------------------------\n");
-
-fprintf( ...
-    "First boundary:\nID = %d, x = %.3f, y = %.3f\n", ...
-    ID0(firstBoundaryRow), ...
-    x0(firstBoundaryRow), ...
-    y0(firstBoundaryRow));
-
-fprintf( ...
-    "\nLast boundary:\nID = %d, x = %.3f, y = %.3f\n", ...
-    ID0(lastBoundaryRow), ...
-    x0(lastBoundaryRow), ...
-    y0(lastBoundaryRow));
-
-fprintf( ...
-    "\nFirst fluid:\nID = %d, x = %.3f, y = %.3f\n", ...
-    ID0(firstFluidRow), ...
-    x0(firstFluidRow), ...
-    y0(firstFluidRow));
-
-
-%% =========================================================
-% AXIS LIMITS
-%
-% Based on actual initial coordinates from C++
-% ==========================================================
-
-% The CSV x-coordinate is the physical radius r >= 0.
-% Plot only this original meridional side.
-radialPlotExtent = max(x0) + dp;
-
-% Display-only wall outside r = 0. These particles are never
-% included in the simulation, energy, pressure, or particle counts.
-leftWallR = (-0.5*dp : -dp : -boundthick + 0.5*dp)';
-leftWallZ = (-boundthick + 0.5*dp : dp : tankheight - 0.5*dp)';
-
-[leftWallRGrid,leftWallZGrid] = meshgrid(leftWallR,leftWallZ);
-
-leftWallRPlot = leftWallRGrid(:);
-leftWallZPlot = leftWallZGrid(:);
-
-xmin = min(leftWallRPlot) - dp;
-xmax = radialPlotExtent;
-
-ymin = min(y0) - dp;
-ymax = max(y0) + dp;
-
-
-%% =========================================================
-% INITIAL FIELD
-% ==========================================================
+field0 = T0.(char(plotVariable));
 
 switch plotVariable
-
+    case "rho"
+        colorLabel = "Density (kg/m^3)";
+    case "drhodt"
+        colorLabel = "Density rate (kg/m^3/s)";
     case "pressure"
-
-        field0 = pressureInitial;
-
-        colorLabel = ...
-            "Pressure (Pa)";
-
-
-    case "density"
-
-        field0 = rhoInitial;
-
-        colorLabel = ...
-            "Density (kg/m^3)";
-
-
+        colorLabel = "Pressure (Pa)";
+    case "u_r"
+        colorLabel = "Radial velocity (m/s)";
+    case "u_z"
+        colorLabel = "Vertical velocity (m/s)";
     case "velocity"
-
-        field0 = sqrt( ...
-            uInitial.^2 + ...
-            vInitial.^2);
-
-        colorLabel = ...
-            "Velocity magnitude (m/s)";
-
-
-    otherwise
-
-        error( ...
-            "Use pressure, density, or velocity.");
-
+        colorLabel = "Velocity magnitude (m/s)";    
+    case "pairAr"
+        colorLabel = "Pair radial acceleration (m/s^2)";
+    case "pairAz"
+        colorLabel = "Pair vertical acceleration (m/s^2)";
+    case "totalAr"
+        colorLabel = "Total radial acceleration (m/s^2)";
+    case "totalAz"
+        colorLabel = "Total vertical acceleration (m/s^2)";
 end
 
-
 %% =========================================================
-% SINGLE-SIDE INITIAL DISPLAY ARRAYS
-%
-% The artificial left wall exists only in these plotting arrays.
+% GLOBAL COLOUR LIMITS FROM ALL C++ OUTPUT FILES
 % ==========================================================
 
-xFluid0Plot = x0(fluid);
+if isempty(colorLimits)
 
-zFluid0Plot = y0(fluid);
+    allFieldValues = [];
 
-fieldFluid0Plot = field0(fluid);
+    for k = 1:numel(files)
 
-xBoundary0Plot = [x0(boundary); leftWallRPlot];
+        filename = fullfile( ...
+            files(k).folder, ...
+            files(k).name);
 
-zBoundary0Plot = [y0(boundary); leftWallZPlot];
+        Tscale = readtable(filename,opts);
 
+        values = Tscale.(char(plotVariable));
+        values = values(fluid & isfinite(values));
 
-%% =========================================================
-% COLOUR LIMITS
-% ==========================================================
+        allFieldValues = [allFieldValues; values];
+    end
 
-rho0_ref = 1000.0;
-g = 9.81;
+    allFieldValues = sort(allFieldValues);
 
+    numberOfValues = numel(allFieldValues);
 
-switch plotVariable
+    lowerIndex = max(1,round(0.05*numberOfValues));
+    upperIndex = min(numberOfValues,round(0.95*numberOfValues));
 
-    case "pressure"
+    fieldMin = allFieldValues(lowerIndex);
+    fieldMax = allFieldValues(upperIndex);
 
+    % Velocity magnitude is always non-negative.
+    if plotVariable == "velocity"
         fieldMin = 0.0;
+    end
 
-        fieldMax = ...
-            rho0_ref * g * waterheight;
+    if fieldMin == fieldMax
+        fieldMax = fieldMin + 1.0;
+    end
 
+else
 
-    case "density"
-
-        initialFluidField = field0(fluid);
-
-        initialFluidField = ...
-            initialFluidField( ...
-            isfinite(initialFluidField));
-
-        fieldMin = min(initialFluidField);
-        fieldMax = max(initialFluidField);
-
-        if fieldMin == fieldMax
-
-            fieldMin = fieldMin - 1;
-            fieldMax = fieldMax + 1;
-
-        end
-
-
-    case "velocity"
-
-        fieldMin = 0.0;
-
-        fieldMax = ...
-            sqrt(g*waterheight);
-
-end
-
-
-fprintf("\n");
-fprintf("COLOUR RANGE\n");
-fprintf("--------------------------------------\n");
-
-fprintf("Minimum = %.6f\n", fieldMin);
-fprintf("Maximum = %.6f\n", fieldMax);
-
-
-%% =========================================================
-% IDEAL HYDROSTATIC PRESSURE
-% ==========================================================
-
-if plotVariable == "pressure"
-
-    pressureHydrostatic = ...
-        rho0_ref * g * ...
-        (waterheight - y0(fluid));
-
-    pressureHydrostatic = ...
-        max(pressureHydrostatic,0.0);
-
-
-    figHydro = figure( ...
-        'Color','w', ...
-        'Position',[1050 100 900 700]);
-
-    hold on;
-
-
-    %% Fluid
-
-    scatter( ...
-        xFluid0Plot, ...
-        zFluid0Plot, ...
-        50, ...
-        pressureHydrostatic, ...
-        'filled', ...
-        'MarkerEdgeColor','none');
-
-
-    %% Boundary
-
-    scatter( ...
-        xBoundary0Plot, ...
-        zBoundary0Plot, ...
-        150, ...
-        [0 0 0], ...
-        'filled');
-
-
-    axis equal;
-
-    xlim([xmin xmax]);
-    ylim([ymin ymax]);
-
-    xlabel('r (m)');
-    ylabel('z (m)');
-
-    grid off;
-    box off;
-
-    colormap(turbo);
-
-    cHydro = colorbar;
-
-    cHydro.Label.String = ...
-        'Ideal hydrostatic pressure (Pa)';
-
-    clim([fieldMin fieldMax]);
-
-    title( ...
-        'Ideal Hydrostatic Pressure');
-
-end
-
-%% =========================================================
-% KINETIC ENERGY VS TIME
-% ==========================================================
-
-KE = zeros(length(files),1);
-
-for n = 1:length(files)
-
-    filename = fullfile( ...
-        files(n).folder, ...
-        files(n).name);
-
-    % C++ CSV:
-    % line 2 = L2norm Pressure, KE, dp, Nparticles
-    % line 3 = numerical values
-    %
-    % Read line 3, columns A:D
-    metadata = readmatrix( ...
-        filename, ...
-        'Range','A3:D3');
-
-    % Column 2 contains kinetic energy
-    KE(n) = metadata(2);
+    fieldMin = colorLimits(1);
+    fieldMax = colorLimits(2);
 
 end
 
 
 %% =========================================================
-% PLOT KINETIC ENERGY VS TIME
+% KINETIC ENERGY READ DIRECTLY FROM C++ METADATA
 % ==========================================================
 
-figure( ...
-    'Color','w', ...
-    'Position',[200 200 800 600]);
+KE = nan(numel(files),1);
 
-plot( ...
-    time, ...
-    KE, ...
-    'LineWidth',1.5);
+for k = 1:numel(files)
+    filename = fullfile(files(k).folder,files(k).name);
+    metadata = readmatrix(filename,'Range','A3:D3');
+    KE(k) = metadata(2);
+end
 
+figure('Color','w','Position',[150 150 800 550]);
+plot(time,KE,'LineWidth',1.5);
 xlabel('Time (s)');
-ylabel('Kinetic Energy (J)');
-
+ylabel('Kinetic energy (J)');
 title('Kinetic Energy vs Time');
-
 grid on;
 box on;
 
-set(gca, ...
-    'FontSize',12, ...
-    'LineWidth',1);
 
-fprintf("\nKINETIC ENERGY\n");
-fprintf("--------------------------------------\n");
-fprintf("Initial KE = %.6e J\n", KE(1));
-fprintf("Maximum KE = %.6e J\n", max(KE));
-fprintf("Final KE   = %.6e J\n", KE(end));
+%% =========================================================
+% SINGLE-SIDE PLOT GEOMETRY
+%
+% All physical particles come directly from C++.
+% The small wall at negative r is display-only.
+% ==========================================================
 
+r0 = T0.r;
+z0 = T0.z;
+
+boundthick = 3*dp;
+
+leftWallR = (-0.5*dp : -dp : -boundthick+0.5*dp)';
+leftWallZ = (min(z0) : dp : max(z0))';
+
+[leftWallRGrid,leftWallZGrid] = meshgrid(leftWallR,leftWallZ);
+leftWallRPlot = leftWallRGrid(:);
+leftWallZPlot = leftWallZGrid(:);
+
+xBoundaryPlot = [r0(boundary);leftWallRPlot];
+zBoundaryPlot = [z0(boundary);leftWallZPlot];
+
+xmin = min(leftWallRPlot)-dp;
+xmax = max(r0)+dp;
+ymin = min(z0)-dp;
+ymax = max(z0)+dp;
 
 
 %% =========================================================
-% CREATE SIMULATION FIGURE
+% FIGURE AND VIDEO
 % ==========================================================
 
-fig = figure( ...
-    'Color','w', ...
-    'Position',[100 100 1200 550]);
-
+fig = figure('Color','w','Position',[100 100 1200 550]);
 hold on;
 
-
-%% =========================================================
-% FLUID PARTICLES
-% ==========================================================
-
 hFluid = scatter( ...
-    xFluid0Plot, ...
-    zFluid0Plot, ...
-    25, ...
-    fieldFluid0Plot, ...
+    r0(fluid), ...
+    z0(fluid), ...
+    fluidMarkerSize, ...
+    field0(fluid), ...
     'filled', ...
     'MarkerEdgeColor','none');
 
-
-%% =========================================================
-% BOUNDARY PARTICLES
-% ==========================================================
-
 hBoundary = scatter( ...
-    xBoundary0Plot, ...
-    zBoundary0Plot, ...
-    80, ...
+    xBoundaryPlot, ...
+    zBoundaryPlot, ...
+    boundaryMarkerSize, ...
     [0 0 0], ...
     'filled');
 
-
-%% =========================================================
-% FIGURE SETTINGS
-% ==========================================================
+dcm = datacursormode(fig);
+dcm.Enable = 'on';
 
 axis equal;
-
 xlim([xmin xmax]);
 ylim([ymin ymax]);
-
 xlabel('r (m)');
 ylabel('z (m)');
-
 grid off;
 box off;
-
 colormap(turbo);
 
 c = colorbar;
-
-c.Label.String = ...
-    colorLabel;
-
-clim([fieldMin fieldMax]);
+c.Label.String = colorLabel;
+caxis([fieldMin fieldMax]);
 
 title(sprintf( ...
     'Axisymmetric SPH Radial Dam-Break (single side), t = %.3f s', ...
     time(1)));
 
-set(gca, ...
-    'FontSize',12, ...
-    'LineWidth',1);
+% Show the fixed C++ particle ID in interactive data tips.
+if isprop(hFluid,'DataTipTemplate')
+    hFluid.DataTipTemplate.DataTipRows(end+1) = ...
+        dataTipTextRow('Particle ID',ID0(fluid));
+end
 
-
-%% =========================================================
-% VIDEO
-% ==========================================================
+[~,simulationName] = fileparts(char(simulationFolder));
+videoName = sprintf('%s_%s_single_side.mp4', ...
+    simulationName,char(plotVariable));
 
 if saveVideo
-
-    video = VideoWriter( ...
-        videoName, ...
-        'MPEG-4');
-
-    video.FrameRate = 50;
-
+    video = VideoWriter(videoName,'MPEG-4');
+    video.FrameRate = videoFrameRate;
     open(video);
-
 end
 
 
 %% =========================================================
-% ANIMATION LOOP
+% TRACKED PARTICLE ARRAYS
+%
+% Every stored quantity below is read directly from C++.
 % ==========================================================
 
-for n = 1:length(files)
+trackingEnabled = ~isempty(trackedParticleID);
 
-    %% -----------------------------------------------------
-    % Read timestep
-    % ------------------------------------------------------
+if trackingEnabled
+    trackR = nan(numel(files),1);
+    trackZ = nan(numel(files),1);
+    trackUr = nan(numel(files),1);
+    trackUz = nan(numel(files),1);
+    trackRho = nan(numel(files),1);
+    trackPressure = nan(numel(files),1);
+    trackPairAr = nan(numel(files),1);
+    trackPairAz = nan(numel(files),1);
+    trackTotalAr = nan(numel(files),1);
+    trackTotalAz = nan(numel(files),1);
+end
 
-    filename = fullfile( ...
-        files(n).folder, ...
-        files(n).name);
 
-    T = readtable(filename, opts);
+%% =========================================================
+% ANIMATION AND PARTICLE HISTORY
+% ==========================================================
 
-
-    %% -----------------------------------------------------
-    % Check particle number
-    % ------------------------------------------------------
+for k = 1:numel(files)
+    filename = fullfile(files(k).folder,files(k).name);
+    T = readtable(filename,opts);
 
     if height(T) ~= Nparticles
-
-        error( ...
-            "Particle count changed at t = %.6f.", ...
-            time(n));
-
+        error("Particle count changed at t = %.6f s.",time(k));
     end
 
-
-    %% -----------------------------------------------------
-    % Read variables
-    % ------------------------------------------------------
-
-    ID = T.ID;
-
-    x = T.x;
-    y = T.y;
-
-    rho = T.rho;
-    pressure = T.pressure;
-
-    u = T.u;
-    v = T.v;
-
-    type = ...
-        lower(strtrim(string(T.type)));
-
-
-    %% -----------------------------------------------------
-    % Check ID consistency
-    %
-    % Particle identity must remain unchanged.
-    % ------------------------------------------------------
-
-    if ~isequal(ID, ID0)
-
-        error( ...
-            "Particle ID ordering changed at t = %.6f.", ...
-            time(n));
-
+    if ~isequal(T.ID,ID0)
+        error("Particle ID ordering changed at t = %.6f s.",time(k));
     end
 
+    typeNow = lower(strtrim(string(T.Type)));
 
-    %% -----------------------------------------------------
-    % Check particle types
-    % ------------------------------------------------------
-
-    if ~isequal(type, type0)
-
-        error( ...
-            "Particle type changed at t = %.6f.", ...
-            time(n));
-
+    if ~isequal(typeNow,type0)
+        error("Particle Type column changed at t = %.6f s.",time(k));
     end
 
+    field = T.(char(plotVariable));
+    validFluid = fluid & isfinite(T.r) & isfinite(T.z) & isfinite(field);
 
-    %% -----------------------------------------------------
-    % Select plotted field
-    % ------------------------------------------------------
+    rFluidPlot = T.r(fluid);
+    zFluidPlot = T.z(fluid);
+    fieldFluidPlot = field(fluid);
 
-    switch plotVariable
+    invalidWithinFluid = ~validFluid(fluid);
+    rFluidPlot(invalidWithinFluid) = NaN;
+    zFluidPlot(invalidWithinFluid) = NaN;
+    fieldFluidPlot(invalidWithinFluid) = NaN;
 
-        case "pressure"
+    set(hFluid, ...
+        'XData',rFluidPlot, ...
+        'YData',zFluidPlot, ...
+        'CData',fieldFluidPlot);
 
-            field = pressure;
-
-
-        case "density"
-
-            field = rho;
-
-
-        case "velocity"
-
-            field = ...
-                sqrt(u.^2 + v.^2);
-
-    end
-
-
-    %% -----------------------------------------------------
-    % Check NaN / Inf
-    % ------------------------------------------------------
-
-    valid = ...
-        isfinite(x) & ...
-        isfinite(y) & ...
-        isfinite(field);
-
-
-    if any(~valid)
-
-        fprintf( ...
-            "Warning: %d invalid particles at t = %.4f s\n", ...
-            sum(~valid), ...
-            time(n));
-
-    end
-
-
-    xplot = x;
-    yplot = y;
-    fieldplot = field;
-
-    xplot(~valid) = NaN;
-    yplot(~valid) = NaN;
-    fieldplot(~valid) = NaN;
-
-
-    %% -----------------------------------------------------
-    % BUILD SINGLE-SIDE DISPLAY ARRAYS
-    % ------------------------------------------------------
-
-    xFluidPlot = xplot(fluid);
-
-    zFluidPlot = yplot(fluid);
-
-    fieldFluidPlot = fieldplot(fluid);
-
-    xBoundaryPlot = [xplot(boundary); leftWallRPlot];
-
-    zBoundaryPlot = [yplot(boundary); leftWallZPlot];
-
-
-    %% -----------------------------------------------------
-    % UPDATE FLUID PARTICLES
-    %
-    % Particle identity comes directly from C++ "type".
-    % It does NOT depend on x or y.
-    % ------------------------------------------------------
-
-    set( ...
-        hFluid, ...
-        'XData', xFluidPlot, ...
-        'YData', zFluidPlot, ...
-        'CData', fieldFluidPlot);
-
-
-    %% -----------------------------------------------------
-    % UPDATE BOUNDARY PARTICLES
-    % ------------------------------------------------------
-
-    set( ...
-        hBoundary, ...
-        'XData', xBoundaryPlot, ...
-        'YData', zBoundaryPlot);
-
-
-    %% -----------------------------------------------------
-    % TITLE
-    % ------------------------------------------------------
+    % Physical boundary coordinates are read directly from C++.
+    set(hBoundary, ...
+        'XData',[T.r(boundary);leftWallRPlot], ...
+        'YData',[T.z(boundary);leftWallZPlot]);
 
     title(sprintf( ...
         'Axisymmetric SPH Radial Dam-Break (single side), t = %.3f s', ...
-        time(n)));
+        time(k)));
 
-    drawnow;
+    if trackingEnabled
+        row = find(T.ID == trackedParticleID,1);
 
-    pause(0.00001);
+        if isempty(row)
+            error("Particle ID %d is missing at t = %.6f s.", ...
+                trackedParticleID,time(k));
+        end
 
-
-    %% -----------------------------------------------------
-    % VIDEO FRAME
-    % ------------------------------------------------------
-
-    if saveVideo
-
-        frame = getframe(fig);
-
-        writeVideo( ...
-            video, ...
-            frame);
-
+        trackR(k) = T.r(row);
+        trackZ(k) = T.z(row);
+        trackUr(k) = T.u_r(row);
+        trackUz(k) = T.u_z(row);
+        trackRho(k) = T.rho(row);
+        trackPressure(k) = T.pressure(row);
+        trackPairAr(k) = T.pairAr(row);
+        trackPairAz(k) = T.pairAz(row);
+        trackTotalAr(k) = T.totalAr(row);
+        trackTotalAz(k) = T.totalAz(row);
     end
 
+    drawnow;
+    pause(0.0001);
+
+    if saveVideo
+        writeVideo(video,getframe(fig));
+    end
+end
+
+if saveVideo
+    close(video);
+    fprintf("Video saved as %s\n",videoName);
 end
 
 
 %% =========================================================
-% CLOSE VIDEO
+% TRACKED PARTICLE OUTPUT
 % ==========================================================
 
-if saveVideo
+if trackingEnabled
+    particleID = repmat(trackedParticleID,numel(files),1);
 
-    close(video);
+    particleHistory = table( ...
+        time,particleID,trackR,trackZ,trackUr,trackUz, ...
+        trackRho,trackPressure,trackPairAr,trackPairAz, ...
+        trackTotalAr,trackTotalAz, ...
+        'VariableNames', ...
+        ["time","ID","r","z","u_r","u_z", ...
+         "rho","pressure","pairAr","pairAz", ...
+         "totalAr","totalAz"]);
 
-    fprintf( ...
-        "\nVideo saved as %s\n", ...
-        videoName);
+    if saveParticleHistory
+        historyFilename = fullfile( ...
+            simulationFolder, ...
+            sprintf('particle_%d_history.csv',trackedParticleID));
 
+        writetable(particleHistory,historyFilename);
+        fprintf("Particle history saved as %s\n",historyFilename);
+    end
+
+    figure('Color','w','Position',[150 80 1100 750]);
+    tiledlayout(3,2,'TileSpacing','compact','Padding','compact');
+
+    nexttile;
+    plot(time,trackR,'LineWidth',1.3);
+    ylabel('r (m)');
+    grid on;
+
+    nexttile;
+    plot(time,trackZ,'LineWidth',1.3);
+    ylabel('z (m)');
+    grid on;
+
+    nexttile;
+    plot(time,trackUr,'LineWidth',1.3);
+    ylabel('u_r (m/s)');
+    grid on;
+
+    nexttile;
+    plot(time,trackUz,'LineWidth',1.3);
+    ylabel('u_z (m/s)');
+    grid on;
+
+    nexttile;
+    plot(time,trackPressure,'LineWidth',1.3);
+    xlabel('Time (s)');
+    ylabel('Pressure (Pa)');
+    grid on;
+
+    nexttile;
+    plot(time,trackTotalAz,'LineWidth',1.3);
+    yline(0,'k--');
+    xlabel('Time (s)');
+    ylabel('Total a_z (m/s^2)');
+    grid on;
+
+    sgtitle(sprintf('C++ History for Particle ID %d',trackedParticleID));
 end
