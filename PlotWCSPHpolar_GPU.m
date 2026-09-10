@@ -7,13 +7,13 @@ close all;
 % ==========================================================
 
 simulationFolder = ...
-    "WCSPHpolar_dp_0.500000_h_1.000000_Nparticles_1611_wendland";
+    "WCSPHpolar_dp_0.250000_h_0.500000_Nparticles_2528_wendland";
 
-plotVariable = "velocity";
-trackedParticleID = 858;       % Use [] to disable tracking.
+plotVariable = "pressure";
+trackedParticleID = 1048;      
 saveVideo = true;
 saveParticleHistory = true;
-colorLimits = [];              % [] gives global 5th--95th percentiles.
+colorLimits = [];              
 
 fluidMarkerSize = 30;
 boundaryMarkerSize = 150;
@@ -348,7 +348,7 @@ c = colorbar;
 c.Label.String = colorLabel;
 caxis([fieldMin fieldMax]);
 title(sprintf( ...
-    'Axisymmetric SPH Radial Dam-Break (single side), t = %.3f s',time(1)));
+    'Axisymmetric SPH Radial Dam-Break, t = %.3f s',time(1)));
 
 if isprop(hFluid,'DataTipTemplate')
     hFluid.DataTipTemplate.DataTipRows(end+1) = ...
@@ -416,7 +416,7 @@ for k = 1:numberOfFrames
         'YData',[frame(boundary,2);leftWallZPlot]);
 
     title(sprintf( ...
-        'Axisymmetric SPH Radial Dam-Break (single side), t = %.3f s',time(k)));
+        'Axisymmetric SPH Radial Dam-Break, t = %.3f s',time(k)));
 
     if trackingEnabled
         trackR(k) = frame(trackedRow,1);

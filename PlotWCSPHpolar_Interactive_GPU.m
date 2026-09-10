@@ -5,9 +5,9 @@ function PlotWCSPHpolar_Interactive_GPU
 
 %% User settings
 % simulationFolder = ...
-%     "WCSPHpolar_dp_0.250000_h_0.500000_Nparticles_2989_wendland";
+%     "WCSPHpolar_dp_0.500000_h_1.000000_Nparticles_936_wendland";
 simulationFolder = ...
-    "WCSPHpolar_dp_0.500000_h_1.000000_Nparticles_1768_wendland";
+    "WCSPHpolar_dp_0.250000_h_0.500000_Nparticles_2928_wendland";
 
 plotVariable = "velocity";
 manualColorLimits = [];        % [] = automatic for each selected parameter.
@@ -359,7 +359,7 @@ showFrame(1);
             'YData',[frame(boundary,2);leftWallZPlot]);
 
         titleHandle.String = sprintf( ...
-            'Axisymmetric SPH Radial Dam-Break (single side), t = %.3f s', ...
+            'Axisymmetric SPH Radial Dam-Break, t = %.3f s', ...
             time(requestedIndex));
         frameSlider.Value = requestedIndex;
         frameLabel.String = sprintf('Frame %d / %d\nt = %.3f s', ...

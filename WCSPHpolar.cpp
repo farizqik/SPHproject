@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <sstream>
 #include <vector>
+#include <limits>
 
 
 using namespace std;
@@ -17,25 +18,27 @@ string Type;
 // Timestep
 // --------------------------------------------
 
-const double dt = 0.001; 
-const double Totaltime= 10.0;
-const int Nt = Totaltime / dt;
+const double dtMax = 0.001;
+const double dtMin = 1.0e-7;
+const double CFL = 0.3;
+const double Totaltime = 10.0;
 
 
 // ------------------------------------------------------------
 // Geometry
 // ------------------------------------------------------------
 
-const double tankradius = 48.0;
-const double tankheight = 27.0;
 
-const double waterradius = 12.0;
-//const double freeboard = 2.0;
-const double waterheight = 24.0;
+const double waterradius = 8.0;
+const double waterheight = 2*waterradius;
+const double freeboard = 5.0;
 
-const double dp = 0.5;
+const double tankradius = 1*waterradius;
+const double tankheight = waterheight + freeboard;
 
-const double boundthick = dp * 4;
+const double dp = 0.25;
+
+const double boundthick = dp * 4.0;
 
 
 
@@ -53,9 +56,11 @@ const double B = c0*c0*rho0/gammaEOS;
 
 const double alphaAV = 0.01;
 
-const double deltadifussion = 0.05;
+const double deltadifussion = 0.1;
 
-const double axisEpsilon = 0.5*dp;
+const double axisEpsilon = 0.25*dp;
+
+const double wallAcousticFactor = 1.5;
 
 
 
@@ -201,6 +206,7 @@ KernelResult Wendland(double q, double h, double dirR, double dirZ)
 
 
 
+
 // --------------------------------------------------
 // Robust 3x3 linear solver with partial pivoting.
 // Returns false when A is singular / nearly singular.
@@ -298,8 +304,6 @@ bool solveLinear(double A[][3], double b[], double X[], int n)
 // --------------------------------------------------------------
 // --------------------------------------------------------------
 
-
-
 void protectAxis(
 double& radius,
 double& radialVelocity)
@@ -315,18 +319,108 @@ double& radialVelocity)
 
 double axisRadius(double r)
 {
-    if (r >= 0.0 && r < axisEpsilon)
+    if (r >= 0.0 && r <= axisEpsilon)
     {
         return axisEpsilon;
     }
 
-    if (r < 0.0 && r > -axisEpsilon)
+    if (r < 0.0 && r >= -axisEpsilon)
     {
         return -axisEpsilon;
     }
 
     return r;
 }
+
+
+// --------------------------------------------------
+// Calculate adaotive timestep
+// 
+// --------------------------------------------------
+
+double calculateDt(int Nboundary,
+    int Nparticles,
+    const vector<double>& r,
+    const vector<double>& z,
+    const vector<double>& u_r,
+    const vector<double>& u_z,
+    const vector<double>& rho,
+    const vector<double>& pressure,
+    const vector<double>& du_rdt,
+    const vector<double>& du_zdt,
+    double h,
+    double c0,
+    const string& kernel)
+    {
+        double dtForce = numeric_limits<double>::infinity(); //initialise dtForce to positive infinity (will be replaced if there are any fluid particles)
+        double dtCFL = numeric_limits<double>::infinity(); //initialise dtCFL to positive infinity (will be replaced if there are any fluid particles)
+
+        for (int i = Nboundary; i < Nparticles; ++i)
+        {
+            // Compute dtForce based on acceleration magnitude
+            double ar =
+                du_rdt[i]
+                + pressure[i] /
+                (rho[i] * axisRadius(r[i]));
+
+            double az = du_zdt[i] - g;
+
+            double accelerationMagnitude =
+                sqrt(ar*ar + az*az);
+
+            if (accelerationMagnitude > 1e-14)
+            {
+                double particleDTForce = sqrt(h / accelerationMagnitude);
+                dtForce = min(dtForce, particleDTForce);
+            }
+
+            // Compute dtCFL based on velocity magnitude
+            double maxRelativeSpeed = 0.0;
+
+            for (int j = 0; j < Nparticles; ++j)
+            {
+                double sr = r[i] - r[j];
+                double sz = z[i] - z[j];
+
+                double s2 = sr*sr + sz*sz;
+
+                if (s2 < 1e-14)
+                {
+                    continue;
+                }
+
+                if ((kernel == "cubic" || kernel == "wendland") && s2 > 4.0*h*h)
+                {
+                    continue;
+                }
+
+                double dur = u_r[i] - u_r[j];
+
+                double duz = u_z[i] - u_z[j];
+
+                double VabRab = dur*sr + duz*sz;
+
+                double RelativeSpeed = abs(h*VabRab/(s2 + 0.01*h*h));
+
+                maxRelativeSpeed = max(maxRelativeSpeed, RelativeSpeed);
+
+            }
+
+            double particleDTCFL = h / (maxRelativeSpeed + c0);
+
+            dtCFL = min(dtCFL, particleDTCFL);
+
+
+        }
+        //cout << "Acceleration-based dt = "<< dtForce << endl;
+        //cout << "Velocity-based dt = "<< dtCFL << endl;
+
+        double adaptivedt = min(dtForce, dtCFL);
+        
+
+        return adaptivedt;
+        
+    }
 
 
 
@@ -460,6 +554,7 @@ void accumulateAxisymmetricInteraction(
     // Common pressure and viscosity coefficient
     // ---------------------------------------------------------
     // Tensile correction for real fluid-fluid interactions.
+    
     double piEff = pi;
     double pjEff = pj;
 
@@ -468,26 +563,18 @@ void accumulateAxisymmetricInteraction(
         rj > 0.0 &&
         pi*ri + pj*rj < 0.0)
     {
-        double referenceWeight =
+        const double referenceWeight =
             Wendland(dp/h, h, 0.0, 0.0).Weight;
 
-        double tensileFactor =
+        const double tensileFactor =
             pow(result.Weight/referenceWeight, 4.0);
 
-        if (pi > 0.0)
-        {
-            piEff += 0.01*pi*tensileFactor;
-        }
-        else if (pi < 0.0)
+        if (pi < 0.0)
         {
             piEff += 0.20*(-pi)*tensileFactor;
         }
 
-        if (pj > 0.0)
-        {
-            pjEff += 0.01*pj*tensileFactor;
-        }
-        else if (pj < 0.0)
+        if (pj < 0.0)
         {
             pjEff += 0.20*(-pj)*tensileFactor;
         }
@@ -889,7 +976,7 @@ int main ()
 
     for (double zp = -0.5*dp; zp > -boundthick; zp -= dp)
     {
-        for (double rp = 0.5*dp; rp < tankradius; rp += dp)
+        for (double rp = 0.5*dp; rp < tankradius+boundthick; rp += dp)
         {
 
             cout << "ID: " << i
@@ -908,7 +995,7 @@ int main ()
          rp < tankradius + boundthick;
          rp += dp)
     {
-        for (double zp = -boundthick+0.5*dp; zp < tankheight; zp += dp)
+        for (double zp = 0.5*dp; zp < tankheight; zp += dp)
         {
 
             cout << "ID: " << i
@@ -976,7 +1063,21 @@ int main ()
         string foldername = 
             "WCSPHpolar_dp_" + to_string(dp) + "_h_" + to_string(h) + "_Nparticles_" + to_string(Nparticles) + "_" + kernel; 
         //system(("mkdir -p " + foldername).c_str());
-        std::filesystem::create_directories(foldername);
+        filesystem::create_directories(foldername);
+
+        // Remove previous CSV output from this exact simulation folder.
+        for (const auto& entry :
+            std::filesystem::directory_iterator(foldername))
+        {
+            if (entry.is_regular_file() &&
+                entry.path().extension() == ".csv")
+            {
+                std::filesystem::remove(entry.path());
+            }
+        }
+
+        cout << "Previous CSV files deleted from: "
+            << foldername << '\n';
 
         r.resize(Nparticles);
         z.resize(Nparticles);
@@ -1112,20 +1213,34 @@ int main ()
 
     for (int i = 0; i < Nparticles; i++)
     {
-        mass[i] = 2.0*PI*r[i]*rho[i]*dp*dp;
+        mass[i] = 2.0*PI*r[i]*rho0*dp*dp;
         drhodtexact[i] = -rho[i]*(0.0);
         pressureexact[i] = rho0*g*(waterheight-z[i]);                                
     } 
+
+
+// ------------------------------------------------------------
+// Initial SPH-estimated fluid volume
+// ------------------------------------------------------------
+
+/*double initialVolume = 0.0;
+
+for (int i = Nboundary; i < Nparticles; ++i)
+{
+    initialVolume += mass[i]/rho[i];
+}*/
+
 
   
 // -----------------------------------------------------------------------------------------------------------------------------
 // start time loop
 // -----------------------------------------------------------------------------------------------------------------------------
+        double t = 0.0;
+        int n = 0;
+        double nextOutputTime = 0.0;
 
-        for (int n=0;n<Nt+1;n++)
+        while (t < Totaltime)
         {
-
-            double t = n*dt;
 
             
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1218,7 +1333,7 @@ int main ()
                         if (z[j] < 0.0)
                         {
                             pjPair +=
-                                0.5*(rho[i] + rho[j])*c0*
+                                wallAcousticFactor*0.5*(rho[i] + rho[j])*c0*
                                 max(0.0, u_z[j] - u_z[i]);
                         }
 
@@ -1226,7 +1341,7 @@ int main ()
                         if (r[j] > tankradius)
                         {
                             pjPair +=
-                                0.5*(rho[i] + rho[j])*c0*
+                                wallAcousticFactor*0.5*(rho[i] + rho[j])*c0*
                                 max(0.0, u_r[i] - u_r[j]);
                         }
                         
@@ -1235,24 +1350,25 @@ int main ()
                     if (j < Nboundary)
                     {
                         // Bottom wall: reflected-wall acoustic pressure
-                        if (z[j] < 0.0)
+                        if (z[j] < 0.0 )
                         {
-                            piPair = max(
+                            const double wallPressure = max(
                                 0.0,
                                 0.5*(pressure[i] + pressure[j])
-                                + 0.5*(rho[i] + rho[j])*c0
+                                + wallAcousticFactor*0.5*(rho[i] + rho[j])*c0
                                 *max(0.0, u_z[j] - u_z[i])
                             );
 
-                            pjPair = piPair;
-                        }
+                            piPair = wallPressure;
+                            pjPair = wallPressure;
 
-                        // Keep your existing outer-wall treatment for now.
+                        }
+                        // Outer radial wall
                         if (r[j] > tankradius)
                         {
                             pjPair +=
-                                0.5*(rho[i] + rho[j])*c0
-                                *max(0.0, u_r[i] - u_r[j]);
+                                0.5*(rho[i] + rho[j])*c0*
+                                max(0.0, u_r[i] - u_r[j]);
                         }
                     }
 
@@ -1315,6 +1431,43 @@ int main ()
                    
             }
 
+
+            //Calculate Dt
+            double dt = CFL*calculateDt(
+                Nboundary,
+                Nparticles,
+                r,
+                z,
+                u_r,
+                u_z,
+                rho,
+                pressure,
+                du_rdt,
+                du_zdt,
+                h,
+                c0,
+                kernel);
+            
+                if (!isfinite(dt) || dt <= 0.0)
+                {
+                    cout << "Invalid timestep at t = " << t << endl;
+                    return 1;
+                }
+
+                if (dt < dtMin)
+                {
+                    cout << "Timestep became too small"
+                        << "  t = " << t
+                        << "  dt = " << dt
+                        << endl;
+
+                    return 1;
+                }
+
+
+            dt = min(dt, dtMax);
+            dt = min(dt, Totaltime - t);
+
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute error
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1337,7 +1490,8 @@ int main ()
 // -----------------------------------------------------------------------------------------------------------------------------
 // Write output
 // -----------------------------------------------------------------------------------------------------------------------------            
-            if (n % int(0.01/dt) == 0)
+            
+            if (t >= nextOutputTime - 1e-12)
             {
                 cout << "t : " << t << endl;
                 string filename = foldername + "/WCSPHpolar_hdp_" + to_string(h/dp) + "_t_" + to_string(t) + ".csv";
@@ -1384,6 +1538,7 @@ int main ()
                     }
            
                 file.close();
+                nextOutputTime += 0.01;
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1485,16 +1640,16 @@ int main ()
                     double piPair = pressurehalf[i];
                     double pjPair = pressurehalf[j];
 
-                    /*if (j < Nboundary)
+                    if (j < Nboundary)
                     {
                         piPair = max(piPair, 0.0);
                         //pjPair = max(pjPair, 0.0);
 
                         // Bottom wall
-                        if (zhalf[j] < 0.0)
+                        /*if (zhalf[j] < 0.0)
                         {
                             pjPair +=
-                                0.5*(rhohalf[i] + rhohalf[j])*c0*
+                                wallAcousticFactor*0.5*(rhohalf[i] + rhohalf[j])*c0*
                                 max(0.0, u_zhalf[j] - u_zhalf[i]);
                         }
 
@@ -1502,26 +1657,28 @@ int main ()
                         if (rhalf[j] > tankradius)
                         {
                             pjPair +=
-                                0.5*(rhohalf[i] + rhohalf[j])*c0*
+                                wallAcousticFactor*0.5*(rhohalf[i] + rhohalf[j])*c0*
                                 max(0.0, u_rhalf[i] - u_rhalf[j]);
-                        }
+                        }*/
 
                        
-                    }*/
+                    }
 
                     if (j < Nboundary)
                     {
                         // Bottom wall: reflected-wall acoustic pressure
                         if (zhalf[j] < 0.0)
                         {
-                            piPair = max(
+                            const double wallPressure = max(
                                 0.0,
                                 0.5*(pressurehalf[i] + pressurehalf[j])
-                                + 0.5*(rhohalf[i] + rhohalf[j])*c0
+                                + wallAcousticFactor*0.5*(rhohalf[i] + rhohalf[j])*c0
                                 *max(0.0, u_zhalf[j] - u_zhalf[i])
                             );
 
-                            pjPair = piPair;
+                            piPair = wallPressure;
+                            pjPair = wallPressure;
+
                         }
 
                         // Keep your existing outer-wall treatment for now.
@@ -1676,10 +1833,10 @@ int main ()
                 // Final state must be valid before entering the next timestep.
                 protectAxis(rnew[i],u_rnew[i]);
 
-                if (znew[i] < -0.5*dp || rnew[i] > tankradius + 0.5*dp)
+                if (znew[i] < -0.5*dp )
                 {
                     cout << "First particle crossing"
-                        << "  time = " << (n + 1)*dt
+                        << "  time = " << t+dt
                         << "  particle = " << i
                         << "  old r = " << r[i]
                         << "  new r = " << rnew[i]
@@ -1705,7 +1862,7 @@ int main ()
                     rhonew[i] <= 0.0)
                 {
                     cout << "Invalid fluid state"
-                        << "  time = " << (n + 1)*dt
+                        << "  time = " << t+dt
                         << "  particle = " << i
                         << "  r = " << rnew[i]
                         << "  z = " << znew[i]
@@ -1733,10 +1890,35 @@ int main ()
                 
             }
 
+            
+            /*double currentVolume = 0.0;
+
+            for (int i = Nboundary; i < Nparticles; ++i)
+            {
+                currentVolume += mass[i]/rho[i];
+            }
+
+            double relativeVolumeError =
+                (currentVolume - initialVolume)/initialVolume;
+
+            if (n % 100 == 0)
+            {
+                const double equivalentDepth =
+                    currentVolume/
+                    (PI*tankradius*tankradius);
+
+                cout << "t = " << t + dt
+                    << "  volume = " << currentVolume
+                    << "  volume error = "
+                    << 100.0*relativeVolumeError << " %"
+                    << "  equivalent depth = "
+                    << equivalentDepth << " m\n";
+            }*/
+
 // -----------------------------------------------------------------------------------------------------------------------------
 // Density Reinitialisation every 20 Timesteps
 // -----------------------------------------------------------------------------------------------------------------------------
-            vector<double> rhoReinitialized = rho;
+            /*vector<double> rhoReinitialized = rho;
 
             if ((n + 1) % 20 == 0)
             {
@@ -1814,8 +1996,12 @@ int main ()
                 {
                     rho[i] = rhoReinitialized[i];
                 }
-            }
 
+
+            }*/
+
+            t += dt;
+            n++;
         }
 
     }
