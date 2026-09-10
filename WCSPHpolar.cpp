@@ -33,7 +33,7 @@ const double waterradius = 8.0;
 const double waterheight = 2*waterradius;
 const double freeboard = 5.0;
 
-const double tankradius = 1*waterradius;
+const double tankradius = 4*waterradius;
 const double tankheight = waterheight + freeboard;
 
 const double dp = 0.25;
@@ -1199,12 +1199,12 @@ int main ()
             u_r[i] = 0.0;
             u_z[i] = 0.0;
             
-            //rho[i] = rho0;
+            rho[i] = rho0;
 
             // Exact hydrostatic initial density for the Tait EOS used here.
             // It satisfies dp/dy = -rho*g in the continuum.
-            double depth = max(0.0, waterheight - z[i]);
-            rho[i] = rho0 * pow(1.0 + (gammaEOS - 1.0)*g*depth/(c0*c0), 1.0/(gammaEOS - 1.0));
+            //double depth = max(0.0, waterheight - z[i]);
+            //rho[i] = rho0 * pow(1.0 + (gammaEOS - 1.0)*g*depth/(c0*c0), 1.0/(gammaEOS - 1.0));
             
             i++;
 

@@ -7,7 +7,7 @@ function PlotWCSPHpolar_Interactive_GPU
 % simulationFolder = ...
 %     "WCSPHpolar_dp_0.500000_h_1.000000_Nparticles_936_wendland";
 simulationFolder = ...
-    "WCSPHpolar_dp_0.250000_h_0.500000_Nparticles_2928_wendland";
+    "WCSPHpolar_dp_0.250000_h_0.500000_Nparticles_2016_wendland";
 
 plotVariable = "velocity";
 manualColorLimits = [];        % [] = automatic for each selected parameter.

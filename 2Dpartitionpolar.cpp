@@ -267,21 +267,21 @@ int main ()
                 KernelResult result;
 
                 result = gaussian(q, h, dirR, dirZ);
-                PGauss[i] += result.Weight*dp*dp;
-                dPGaussR[i] += result.dWeightR*dp*dp;
-                dPGaussZ[i] += result.dWeightZ*dp*dp;
+                PGauss[i] += result.Weight*mass/(2*PI*r[j]*rho);
+                dPGaussR[i] += result.dWeightR*mass/(2*PI*r[j]*rho);
+                dPGaussZ[i] += result.dWeightZ*mass/(2*PI*r[j]*rho);
                 drhodtGauss[i] += (1.0/(2*PI))*((mass/r[j])*(du_r*result.dWeightR+du_z*result.dWeightZ));
                 
                 result = cubicSpline(q, h, dirR, dirZ);
-                PCubic[i] += result.Weight*dp*dp;
-                dPCubicR[i] += result.dWeightR*dp*dp;
-                dPCubicZ[i] += result.dWeightZ*dp*dp;
+                PCubic[i] += result.Weight*mass/(2*PI*r[j]*rho);
+                dPCubicR[i] += result.dWeightR*mass/(2*PI*r[j]*rho);
+                dPCubicZ[i] += result.dWeightZ*mass/(2*PI*r[j]*rho);
                 drhodtCubic[i] += (1.0/(2*PI))*((mass/r[j])*(du_r*result.dWeightR+du_z*result.dWeightZ));
 
                 result = Wendland(q, h, dirR, dirZ);
-                PWedn[i] += result.Weight*dp*dp;
-                dPWednR[i] += result.dWeightR*dp*dp;
-                dPWednZ[i] += result.dWeightZ*dp*dp;
+                PWedn[i] += result.Weight*mass/(2*PI*r[j]*rho);
+                dPWednR[i] += result.dWeightR*mass/(2*PI*r[j]*rho);
+                dPWednZ[i] += result.dWeightZ*mass/(2*PI*r[j]*rho);
                 drhodtWedn[i] += (1.0/(2*PI))*((mass/r[j])*(du_r*result.dWeightR+du_z*result.dWeightZ));
 
         

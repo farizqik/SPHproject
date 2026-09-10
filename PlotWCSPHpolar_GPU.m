@@ -7,7 +7,7 @@ close all;
 % ==========================================================
 
 simulationFolder = ...
-    "WCSPHpolar_dp_0.250000_h_0.500000_Nparticles_2528_wendland";
+    "WCSPHpolar_dp_0.250000_h_0.500000_Nparticles_2016_wendland";
 
 plotVariable = "pressure";
 trackedParticleID = 1048;      
@@ -348,7 +348,7 @@ c = colorbar;
 c.Label.String = colorLabel;
 caxis([fieldMin fieldMax]);
 title(sprintf( ...
-    'Axisymmetric SPH Radial Dam-Break, t = %.3f s',time(1)));
+    'Axisymmetric SPH Radial Still Water, t = %.3f s',time(1)));
 
 if isprop(hFluid,'DataTipTemplate')
     hFluid.DataTipTemplate.DataTipRows(end+1) = ...
@@ -416,7 +416,7 @@ for k = 1:numberOfFrames
         'YData',[frame(boundary,2);leftWallZPlot]);
 
     title(sprintf( ...
-        'Axisymmetric SPH Radial Dam-Break, t = %.3f s',time(k)));
+        'Axisymmetric SPH Radial Still Water, t = %.3f s',time(k)));
 
     if trackingEnabled
         trackR(k) = frame(trackedRow,1);
