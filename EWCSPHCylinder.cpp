@@ -37,7 +37,7 @@ const double Dcylinder = 0.01;
 const double r0 = 0.5*Dcylinder;
 const double R = 20*Dcylinder;
 const double dr0 = sqrt(2.0*viscosity*tvis);
-double drhodtexact = 0.0;
+double drhodtexact = -100;
 
 const int Nr = 100;
 

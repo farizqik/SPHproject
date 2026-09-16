@@ -11,7 +11,7 @@ Apolar,0.0248101
 Bpolar,0.0178028
 
 L2normPGauss,L2normPCubic,L2normPWedn,L2normdrhodtGauss,L2normdrhodtCubic,L2normdrhodtWedn
-0.0865485,0.0817983,0.0786038,97.6104,98.0791,97.0408
+0.0865485,0.0817983,0.0786038,10.3715,9.86228,10.0031
 
 ID,r,theta,x,y,Type,,PGauss,PCubic,PWed,,dPGaussX,dPGaussY,,dPCubicX,dPCubicY,,dPWednX,dPWednY,,drhodtGauss,drhodtCubic,drhodtWedn
 0,0.005,0,0.005,0,boundary,,0.522568,0.520744,0.522351,,811.673,6.00227e-13,,957.994,9.87654e-13,,974.418,1.38201e-12,,-50.4003,-51.4143,-50.153,
