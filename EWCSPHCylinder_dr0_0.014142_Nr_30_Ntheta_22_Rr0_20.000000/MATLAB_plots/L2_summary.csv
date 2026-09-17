@@ -1,0 +1,2 @@
+h_coefficient,L2_P_Gaussian,L2_P_Cubic,L2_P_Wendland,L2_Grad_Gaussian,L2_Grad_Cubic,L2_Grad_Wendland,L2_DrhoDt_Gaussian,L2_DrhoDt_Cubic,L2_DrhoDt_Wendland
+2,0.158545,0.147369,0.138427,5.12738789639229,5.98770612822196,6.1366603664305,1741.27,2075.17,2144.04

@@ -56,7 +56,7 @@ const double dr0 = sqrt(2.0*viscosity*tvis);
 const double alphaAV = 0.01;
 const double deltadifussion = 0.1;
 
-const int Nr = 30;
+const int Nr = 31;
 
 string kernel; 
 string type; 
@@ -534,8 +534,8 @@ vector<double> Vi;
 
 int main()
 {
-    double qAlow = 1.0;
-    double qAhigh = 1.5;
+    double qAlow = 0.0;
+    double qAhigh = 2.0;
     double maxiter = 1000;
     double tolerance = 1.0e-6;
     double qA = 1.0;
@@ -784,14 +784,14 @@ int main()
 // --------------------------------------------------
         for (int i = 0; i < Nparticles; i++)
         {
-            u[i] = (i < Nboundary) ? 0.0 : inletVelocity;
+            u[i] = 0.0;
             v[i] = 0.0;
             rho[i] = rho0;
-            /*if (i / NTheta == Nr)
+            if (i / NTheta == Nr && x[i] < 0) 
             {
-                u[i] = 1.0;
+                u[i] = inletVelocity;
                 v[i] = 0.0;
-            }*/
+            }
             drhodtexact[i] = -rho[i]*velcoefX;
             pressureexact[i] = rho0*g*(waterheight-y[i]);
         }
@@ -1175,7 +1175,7 @@ int main()
                 rhohalf[i] = rho[i]+drhodt[i]*dt/2;
                 uhalf[i] = u[i]+dudt[i]*dt/2;
                 vhalf[i] = v[i]+(dvdt[i])*dt/2;
-                if (i / NTheta == Nr)
+                if (i / NTheta == Nr && x[i] < 0)
                 {
                     uhalf[i] = u[i];
                     vhalf[i] = v[i];
@@ -1243,7 +1243,7 @@ int main()
                 rhohalf[i] = rho[i]+drhodthalf[i]*dt/2;
                 uhalf[i] = u[i]+dudthalf[i]*dt/2;
                 vhalf[i] = v[i]+(dvdthalf[i])*dt/2;
-                if (i / NTheta == Nr)
+                if (i / NTheta == Nr && x[i] < 0)
                 {
                     uhalf[i] = u[i];
                     vhalf[i] = v[i];

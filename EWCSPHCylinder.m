@@ -10,7 +10,7 @@ close all;
 % ==========================================================
 
 simulationFolder = ...
-    "EWCSPHCylinder_dr0_0.000447_Nr_60_Ntheta_70_Rr0_40.000000";
+    "EWCSPHCylinder_dr0_0.001414_Nr_100_Ntheta_222_Rr0_40.000000";
 
 filePattern = "particles_hdp_*.csv";
 
@@ -442,6 +442,8 @@ for n = 1:nFiles
         X,Y,PGaussGrid,30, ...
         'LineColor','none');
 
+    addContourDataTips(gca,X,Y,PGaussGrid);
+
     axis equal tight;
     clim(pLimits);
     colorbar;
@@ -460,6 +462,8 @@ for n = 1:nFiles
         X,Y,PCubicGrid,30, ...
         'LineColor','none');
 
+    addContourDataTips(gca,X,Y,PCubicGrid);
+
     axis equal tight;
     clim(pLimits);
     colorbar;
@@ -477,6 +481,8 @@ for n = 1:nFiles
     contourf( ...
         X,Y,PWednGrid,30, ...
         'LineColor','none');
+
+    addContourDataTips(gca,X,Y,PWednGrid);
 
     axis equal tight;
     clim(pLimits);
@@ -540,6 +546,8 @@ for n = 1:nFiles
         X,Y,gradGaussGrid,30, ...
         'LineColor','none');
 
+    addContourDataTips(gca,X,Y,gradGaussGrid);
+
     axis equal tight;
 
     clim([0 gradMax]);
@@ -560,6 +568,8 @@ for n = 1:nFiles
         X,Y,gradCubicGrid,30, ...
         'LineColor','none');
 
+    addContourDataTips(gca,X,Y,gradCubicGrid);
+
     axis equal tight;
 
     clim([0 gradMax]);
@@ -579,6 +589,8 @@ for n = 1:nFiles
     contourf( ...
         X,Y,gradWednGrid,30, ...
         'LineColor','none');
+
+    addContourDataTips(gca,X,Y,gradWednGrid);
 
     axis equal tight;
 
@@ -644,6 +656,8 @@ for n = 1:nFiles
         X,Y,rhoGaussGrid,30, ...
         'LineColor','none');
 
+    addContourDataTips(gca,X,Y,rhoGaussGrid);
+
     axis equal tight;
 
     clim(rhoLimits);
@@ -664,6 +678,8 @@ for n = 1:nFiles
         X,Y,rhoCubicGrid,30, ...
         'LineColor','none');
 
+    addContourDataTips(gca,X,Y,rhoCubicGrid);
+
     axis equal tight;
 
     clim(rhoLimits);
@@ -683,6 +699,8 @@ for n = 1:nFiles
     contourf( ...
         X,Y,rhoWednGrid,30, ...
         'LineColor','none');
+
+    addContourDataTips(gca,X,Y,rhoWednGrid);
 
     axis equal tight;
 
@@ -948,3 +966,73 @@ end
 
 fprintf("\nAll plots created.\n");
 fprintf("Saved in:\n%s\n",outputFolder);
+
+%% Continuous value inspection on the filled contour
+function addContourDataTips(ax,X,Y,field)
+    % Remove the duplicated angular seam before building the interpolant.
+    X = X(1:end-1,:);
+    Y = Y(1:end-1,:);
+    field = field(1:end-1,:);
+    valid = isfinite(X) & isfinite(Y) & isfinite(field);
+    xy = [X(valid),Y(valid)];
+    values = field(valid);
+    [xy,indices] = unique(xy,'rows');
+    values = values(indices);
+    F = scatteredInterpolant(xy(:,1),xy(:,2),values,'linear','none');
+    radii = hypot(X(:),Y(:));
+    data = struct('F',F,'rmin',min(radii),'rmax',max(radii));
+    contours = findobj(ax,'Type','contour');
+    set(contours,'UserData',data,'HitTest','on','PickableParts','all', ...
+        'ButtonDownFcn',@showContinuousValue);
+
+    % Keep scroll zoom and pan. A plain click runs the contour callback.
+    ax.Interactions = [zoomInteraction panInteraction];
+    axtoolbar(ax,{'zoomin','zoomout','pan','restoreview'});
+end
+
+function showContinuousValue(contourHandle,~)
+    ax = ancestor(contourHandle,'axes');
+    fig = ancestor(ax,'figure');
+    if ~strcmp(get(fig,'SelectionType'),'normal')
+        return;
+    end
+    position = get(ax,'CurrentPoint');
+    xq = position(1,1);
+    yq = position(1,2);
+    data = get(contourHandle,'UserData');
+    rq = hypot(xq,yq);
+    if rq < data.rmin || rq > data.rmax
+        return;
+    end
+    value = data.F(xq,yq);
+    if ~isfinite(value)
+        return;
+    end
+
+    % The anchor is not drawn: there are no particle dots on the contour.
+    existingTip = findall(ax,'Tag','ContinuousValueAnchor');
+
+    if ~isempty(existingTip)
+        delete(existingTip);
+        delete(findall(ax,'Tag','ContinuousValueText'));
+        return;
+    end
+    anchor = line(ax,xq,yq,'LineStyle','none','Marker','none', ...
+        'HitTest','off','PickableParts','none', ...
+        'Tag','ContinuousValueAnchor');
+    if isprop(anchor,'DataTipTemplate')
+        anchor.DataTipTemplate.DataTipRows = [ ...
+            dataTipTextRow('x (m)','XData','%.8g'); ...
+            dataTipTextRow('y (m)','YData','%.8g'); ...
+            dataTipTextRow('Interpolated value',value,'%.10g')];
+        anchor.DataTipTemplate.Interpreter = 'none';
+        datatip(anchor,xq,yq);
+    else
+        % Compatibility fallback for releases without line data templates.
+        delete(findall(ax,'Tag','ContinuousValueText'));
+        text(ax,xq,yq,sprintf('x = %.8g\ny = %.8g\nInterpolated value = %.10g', ...
+            xq,yq,value),'BackgroundColor','white','EdgeColor','black', ...
+            'Margin',4,'VerticalAlignment','bottom','Interpreter','none', ...
+            'HitTest','off','PickableParts','none','Tag','ContinuousValueText');
+    end
+end

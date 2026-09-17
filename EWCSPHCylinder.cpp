@@ -32,12 +32,12 @@ const double gammaEOS = 7.0;
 const double BEOS = c0*c0*rho/gammaEOS;
 
 const double viscosity = 1.0e-6;
-const double tvis = 0.1;
-const double Dcylinder = 0.01;
+const double tvis = 1.0;
+const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder;
 const double R = 20*Dcylinder;
 const double dr0 = sqrt(2.0*viscosity*tvis);
-double drhodtexact = -100;
+double drhodtexact = 0;
 
 const int Nr = 100;
 
@@ -169,8 +169,8 @@ double radialSum(double qA, int N)
 
 int main()
 {
-    double qAlow = 1.0;
-    double qAhigh = 1.5;
+    double qAlow = 0.0;
+    double qAhigh = 2.0;
     double maxiter = 1000;
     double tolerance = 1.0e-6;
     double qA = 1.0;
@@ -378,7 +378,7 @@ int main()
 
         for (int i = 0; i < Nparticles; i++)
         {
-            u[i] = 0.1*x[i];
+            u[i] = 1.0;
             v[i] = 0.0;
         }
 

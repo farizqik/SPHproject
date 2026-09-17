@@ -48,6 +48,11 @@ manualColorLimits = [];
 colorPercentiles = [5 95];
 
 playbackFPS = 20;
+
+% Saved MP4 settings.
+videoFPS = 20;
+videoQuality = 95;
+
 showStreamlines = false;
 streamGridSize = 220;
 streamSeedCount = 25;
@@ -563,6 +568,34 @@ hBoundary = scatter( ...
     'filled');
 
 
+%% Click-selection display
+% Fluid particles remain visually hidden. Clicking the continuous surface
+% selects the nearest actual SPH fluid particle. Clicking the cylinder
+% selects the nearest boundary particle.
+hSelectedParticle = plot( ...
+    ax,NaN,NaN,'o', ...
+    'MarkerSize',10, ...
+    'LineWidth',1.6, ...
+    'MarkerEdgeColor','k', ...
+    'MarkerFaceColor','w', ...
+    'LineStyle','none', ...
+    'HitTest','off', ...
+    'PickableParts','none');
+
+hParticleInfo = text( ...
+    ax,0.015,0.985,'', ...
+    'Units','normalized', ...
+    'VerticalAlignment','top', ...
+    'HorizontalAlignment','left', ...
+    'BackgroundColor','w', ...
+    'EdgeColor',[0.25 0.25 0.25], ...
+    'Margin',5, ...
+    'Interpreter','none', ...
+    'Visible','off', ...
+    'HitTest','off', ...
+    'PickableParts','none');
+
+
 %% Velocity arrows
 arrowRows = fluidRows(1:arrowStride:end);
 hVelocity = quiver(ax, ...
@@ -676,6 +709,15 @@ historyButton = uicontrol( ...
     'Position',[0.395 0.065 0.075 0.055]);
 
 
+saveVideoButton = uicontrol( ...
+    fig, ...
+    'Style','pushbutton', ...
+    'String','Save MP4', ...
+    'Units','normalized', ...
+    'Position',[0.395 0.015 0.075 0.043], ...
+    'TooltipString','Save all loaded frames as an MP4 animation');
+
+
 parameterText = uicontrol( ...
     fig, ...
     'Style','text', ...
@@ -764,6 +806,8 @@ lastButton.Callback = @(~,~)showFrame(numberOfFrames);
 
 historyButton.Callback = @showSelectedHistory;
 
+saveVideoButton.Callback = @saveAnimation;
+
 parameterMenu.Callback = @parameterChanged;
 
 frameSlider.Callback = @sliderMoved;
@@ -773,13 +817,16 @@ fig.WindowKeyPressFcn = @keyPressed;
 fig.CloseRequestFcn = @closeViewer;
 
 
-%% Particle data cursor
+%% Particle selection by mouse click
+% Do not use MATLAB data-cursor indexing on the interpolated surface.
+% A surface click is converted to the nearest real SPH particle instead.
+hFluid.HitTest = 'on';
+hFluid.PickableParts = 'all';
+hFluid.ButtonDownFcn = @selectNearestParticle;
 
-dataCursor = datacursormode(fig);
-
-dataCursor.Enable = 'on';
-
-dataCursor.UpdateFcn = @particleDataTip;
+hBoundary.HitTest = 'on';
+hBoundary.PickableParts = 'all';
+hBoundary.ButtonDownFcn = @selectNearestParticle;
 
 
 showFrame(1);
@@ -1034,6 +1081,14 @@ showFrame(1);
 
         guidata(fig,currentState);
 
+        % Keep the selected physical particle highlighted as frames change.
+        if ~isempty(currentState.selectedID)
+            selectedRow = find(ID0 == currentState.selectedID,1);
+            if ~isempty(selectedRow)
+                updateSelectedParticleDisplay(selectedRow,frame);
+            end
+        end
+
 
         drawnow limitrate;
 
@@ -1171,6 +1226,114 @@ showFrame(1);
 
 
     %% ---------------------------------------------------------
+    % Save animation as MP4
+    % ----------------------------------------------------------
+
+    function saveAnimation(~,~)
+
+        stopPlayback;
+
+        currentState = guidata(fig);
+        originalFrame = currentState.index;
+
+        % Use the currently selected displayed quantity in the filename.
+        defaultName = sprintf( ...
+            'EWCSPH_hdp_%g_%s.mp4', ...
+            hCoefficient, ...
+            char(plotVariable));
+
+        [fileName,pathName] = uiputfile( ...
+            '*.mp4', ...
+            'Save animation as', ...
+            fullfile(simulationFolder,defaultName));
+
+        if isequal(fileName,0)
+            return;
+        end
+
+        outputFile = fullfile(pathName,fileName);
+
+        writer = VideoWriter(outputFile,'MPEG-4');
+        writer.FrameRate = videoFPS;
+        writer.Quality = videoQuality;
+
+        % Save current interface state.
+        controls = [ ...
+            firstButton,backButton,playButton,nextButton,lastButton, ...
+            historyButton,saveVideoButton,parameterText,parameterMenu, ...
+            frameSlider,frameLabel];
+
+        controlVisibility = get(controls,'Visible');
+        oldAxesPosition = ax.Position;
+        oldSelectedVisibility = hSelectedParticle.Visible;
+        oldInfoVisibility = hParticleInfo.Visible;
+
+        % Temporarily clear the selected particle so its marker/info box
+        % does not reappear when showFrame updates each movie frame.
+        movieState = currentState;
+        movieState.selectedID = [];
+        guidata(fig,movieState);
+
+        try
+            % Hide viewer controls and particle-selection annotation so the
+            % exported movie contains only the scientific visualisation.
+            set(controls,'Visible','off');
+            hSelectedParticle.Visible = 'off';
+            hParticleInfo.Visible = 'off';
+
+            % Use more of the figure area for the exported animation.
+            ax.Position = [0.07 0.08 0.80 0.86];
+
+            open(writer);
+
+            for frameIndex = 1:numberOfFrames
+                showFrame(frameIndex);
+                drawnow;
+
+                movieFrame = getframe(fig);
+                writeVideo(writer,movieFrame);
+            end
+
+            close(writer);
+
+        catch exportError
+
+            try
+                close(writer);
+            catch
+            end
+
+            % Restore the viewer before reporting the error.
+            ax.Position = oldAxesPosition;
+            for controlIndex = 1:numel(controls)
+                controls(controlIndex).Visible = controlVisibility{controlIndex};
+            end
+            guidata(fig,currentState);
+            hSelectedParticle.Visible = oldSelectedVisibility;
+            hParticleInfo.Visible = oldInfoVisibility;
+            showFrame(originalFrame);
+
+            rethrow(exportError);
+        end
+
+        % Restore interactive viewer.
+        ax.Position = oldAxesPosition;
+        for controlIndex = 1:numel(controls)
+            controls(controlIndex).Visible = controlVisibility{controlIndex};
+        end
+        guidata(fig,currentState);
+        hSelectedParticle.Visible = oldSelectedVisibility;
+        hParticleInfo.Visible = oldInfoVisibility;
+        showFrame(originalFrame);
+
+        fprintf('\nAnimation saved to:\n%s\n',outputFile);
+        msgbox(sprintf('Animation saved to:\n%s',outputFile), ...
+            'Animation saved');
+
+    end
+
+
+    %% ---------------------------------------------------------
     % Keyboard controls
     % ----------------------------------------------------------
 
@@ -1206,86 +1369,96 @@ showFrame(1);
 
 
     %% ---------------------------------------------------------
-    % Particle data tip
+    % Select nearest actual SPH particle from a mouse click
     % ----------------------------------------------------------
 
-    function output = particleDataTip(~,event)
+    function selectNearestParticle(source,~)
 
-        currentState = guidata(fig);
-
-        dataIndex = event.DataIndex;
-
-        frame = ...
-            currentState.currentFrame;
-
-
-        if isequal(event.Target,hFluid)
-
-            if dataIndex < 1 || ...
-                    dataIndex > numel(surfaceRows)
-
-                output = ...
-                    {'No fluid particle selected'};
-
-                return;
-
-            end
-
-            row = ...
-                surfaceRows(dataIndex);
-
-            particleType = ...
-                'Fluid';
-
-
-        elseif isequal(event.Target,hBoundary)
-
-            if dataIndex < 1 || ...
-                    dataIndex > numel(boundaryRows)
-
-                output = ...
-                    {'No boundary particle selected'};
-
-                return;
-
-            end
-
-            row = ...
-                boundaryRows(dataIndex);
-
-            particleType = ...
-                'Boundary';
-
-
-        else
-
-            output = ...
-                {'Unknown plotted object'};
-
+        % Left click only.
+        if ~strcmp(fig.SelectionType,'normal')
             return;
-
         end
 
+        stopPlayback;
 
-        currentState.selectedID = ...
-            ID0(row);
+        currentState = guidata(fig);
+        frame = currentState.currentFrame;
 
+        % Click location in axes coordinates.
+        point = ax.CurrentPoint;
+        xClick = point(1,1);
+        yClick = point(1,2);
+
+        % Select only from the physical particle set represented by the
+        % clicked graphics object.
+        if isequal(source,hBoundary)
+            candidateRows = boundaryRows;
+        else
+            candidateRows = fluidRows;
+        end
+
+        dx = frame(candidateRows,1) - xClick;
+        dy = frame(candidateRows,2) - yClick;
+
+        [~,nearestIndex] = min(dx.^2 + dy.^2);
+        row = candidateRows(nearestIndex);
+
+        currentState.selectedID = ID0(row);
         guidata(fig,currentState);
 
+        updateSelectedParticleDisplay(row,frame);
 
-        output = { ...
-            sprintf('Type: %s',particleType), ...
-            sprintf('ID: %d',ID0(row)), ...
-            sprintf('x: %.6g m',frame(row,1)), ...
-            sprintf('y: %.6g m',frame(row,2)), ...
-            sprintf('rho: %.6g kg/m^3',frame(row,3)), ...
-            sprintf('drho/dt: %.6g kg/m^3/s',frame(row,4)), ...
-            sprintf('pressure: %.6g Pa',frame(row,5)), ...
-            sprintf('u: %.6g m/s',frame(row,6)), ...
-            sprintf('v: %.6g m/s',frame(row,7)), ...
-            sprintf('|V|: %.6g m/s',frame(row,8)), ...
-            sprintf('du/dt: %.6g m/s^2',frame(row,9)), ...
-            sprintf('dv/dt: %.6g m/s^2',frame(row,10))};
+    end
+
+
+    %% ---------------------------------------------------------
+    % Update selected-particle marker and numerical information
+    % ----------------------------------------------------------
+
+    function updateSelectedParticleDisplay(row,frame)
+
+        if boundary(row)
+            particleType = 'Boundary';
+        else
+            particleType = 'Fluid';
+        end
+
+        % Highlight only the selected particle; the rest of the fluid
+        % particles remain hidden so the field stays continuous.
+        set( ...
+            hSelectedParticle, ...
+            'XData',frame(row,1), ...
+            'YData',frame(row,2));
+
+        hParticleInfo.String = sprintf( ...
+            ['Selected %s particle\n' ...
+             'ID = %d\n' ...
+             'x = %.6g m\n' ...
+             'y = %.6g m\n' ...
+             'rho = %.6g kg/m^3\n' ...
+             'drho/dt = %.6g kg/m^3/s\n' ...
+             'pressure = %.6g Pa\n' ...
+             'u = %.6g m/s\n' ...
+             'v = %.6g m/s\n' ...
+             '|V| = %.6g m/s\n' ...
+             'du/dt = %.6g m/s^2\n' ...
+             'dv/dt = %.6g m/s^2\n' ...
+             'vorticity = %.6g s^-1'], ...
+            particleType, ...
+            ID0(row), ...
+            frame(row,1), ...
+            frame(row,2), ...
+            frame(row,3), ...
+            frame(row,4), ...
+            frame(row,5), ...
+            frame(row,6), ...
+            frame(row,7), ...
+            frame(row,8), ...
+            frame(row,9), ...
+            frame(row,10), ...
+            frame(row,11));
+
+        hParticleInfo.Visible = 'on';
 
     end
 
