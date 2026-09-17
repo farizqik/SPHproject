@@ -29,7 +29,7 @@ function PlotEWCSPHCylinder_Streamlines_GPU
 % ==========================================================
 
 simulationFolder = ...
-    "EWCSPHCylinder_dr0_0.014142_Nr_30_Ntheta_22_Rr0_20.000000";
+    "EWCSPHCylinder_dr0_0.014142_Nr_31_Ntheta_22_Rr0_20.000000";
 
 % Choose ONE h/dp case written by the C++ code:
 % available in the current C++ code: 1.2, 1.5, 1.8, 2.0
