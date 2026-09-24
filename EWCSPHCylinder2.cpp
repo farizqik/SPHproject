@@ -19,7 +19,7 @@ using namespace std;
 const double dtMax = 0.001;
 const double dtMin = 1.0e-10;
 const double CFL = 0.3;
-const double Totaltime = 20.0;
+const double Totaltime = 10.0;
 
 // ------------------------------------------------------------
 // Geometry
@@ -45,18 +45,25 @@ const double c0 = 10.0*sqrt(g*(waterheight));
 const double gammaEOS = 7.0;
 const double B = c0*c0*rho0/gammaEOS;
 
-const double viscosity = 1.0e-4;
+const double viscosity = 1.0e-5;
 const double tvis = 1.0;
 const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder;
 const double R = 10*Dcylinder;
-const double dr0 = sqrt(2.0*viscosity*tvis);
+const double dr0 = sqrt(20.0*viscosity*tvis);
 //const double dr0 = 0.1*Dcylinder;
 //double drhodtexact = -100;
 const double alphaAV = 0.01;
 const double deltadifussion = 0.1;
 
-const int Nr = 31;
+const int Nr = 30;
+const int Nbuffer = 8;      // open-boundary buffer rings
+int NrTotal = Nr + Nbuffer;
+
+double Reynolds =
+    inletVelocity*Dcylinder/viscosity;
+
+
 
 string kernel; 
 string type; 
@@ -240,7 +247,7 @@ bool solveLinear(double A[][3], double b[], double X[], int n)
 // --------------------------------------------------
 
 double calculateDt(int Nboundary,
-    int Nparticles,
+    int Nparticles, int NfluidEnd,
     const vector<double>& x,
     const vector<double>& y,
     const vector<double>& u,
@@ -256,7 +263,7 @@ double calculateDt(int Nboundary,
         double dtForce = numeric_limits<double>::infinity(); //initialise dtForce to positive infinity (will be replaced if there are any fluid particles)
         double dtCFL = numeric_limits<double>::infinity(); //initialise dtCFL to positive infinity (will be replaced if there are any fluid particles)
 
-        for (int i = Nboundary; i < Nparticles; ++i)
+        for (int i = Nboundary; i < NfluidEnd; ++i)
         {
             // Compute dtForce based on acceleration magnitude
             double ax = dudt[i];
@@ -410,6 +417,7 @@ void accumulateInteraction(
         + rhos[i]*Vj*relativeVelocityDotGradient
         + diffusion;
 
+
     // Symmetric pressure + artificial viscosity
     double pressureTerm =
         ps[i]/(rhos[i]*rhos[i])
@@ -424,6 +432,30 @@ void accumulateInteraction(
     dvAcc -=
         Vj*(vs[j]-vs[i])*velocityDotGradient
         + Vj*rhos[j]*pressureTerm*result.dWeightY;
+
+// --------------------------------------------------
+// Physical viscosity
+// nu * Laplacian(u)
+// --------------------------------------------------
+
+    double rijDotGradW =
+        rx*result.dWeightX
+        + ry*result.dWeightY;
+
+    double viscousX =
+        2.0*viscosity*Vj
+        *(us[i]-us[j])
+        *rijDotGradW
+        /(r2 + 0.01*h*h);
+
+    double viscousY =
+        2.0*viscosity*Vj
+        *(vs[i]-vs[j])
+        *rijDotGradW
+        /(r2 + 0.01*h*h);
+
+    duAcc += viscousX;
+    dvAcc += viscousY;
 }
 
 
@@ -443,6 +475,485 @@ double radialSum(double qA, int N)
     return (pow(qA, N) - 1.0) / (qA - 1.0);
 }
 
+
+// --------------------------------------------------
+// Compute mDBC interpolation for a ghost particle
+// --------------------------------------------------
+
+void interpolateMDBC(
+    int i,
+    int Nboundary,
+    int NfluidEnd,
+    int NTheta,
+
+    const vector<double>& xState,
+    const vector<double>& yState,
+    const vector<double>& rhoState,
+
+    const vector<double>& xGhost,
+    const vector<double>& yGhost,
+
+    const vector<double>& Vi,
+    const vector<double>& hp,
+
+    const string& kernel,
+
+    double& rhoGhostOut,
+    double& drhoGhostXOut,
+    double& drhoGhostYOut,
+    double& rhoBoundaryOut)
+{
+    const int matrixSize = 3;
+
+    double A[matrixSize][matrixSize] = {0.0};
+    double b[matrixSize] = {0.0};
+    double X[matrixSize] = {0.0};
+
+    int neighborCount = 0;
+
+    double shepardNumerator = 0.0;
+    double shepardDenominator = 0.0;
+
+    // h representative of the fluid near this boundary particle
+    double h = hp[i + NTheta];
+
+    for (int j = Nboundary;
+         j < NfluidEnd;
+         ++j)
+    {
+        double rx =
+            xGhost[i] - xState[j];
+
+        double ry =
+            yGhost[i] - yState[j];
+
+        double r2 =
+            rx*rx + ry*ry;
+
+        if ((kernel == "cubic" ||
+             kernel == "wendland") &&
+            r2 > 4.0*h*h)
+        {
+            continue;
+        }
+
+        double distance = sqrt(r2);
+        double q = distance/h;
+
+        // Optional Gaussian truncation
+        if (kernel == "gaussian" && q > 3.0)
+        {
+            continue;
+        }
+
+        double dirX = 0.0;
+        double dirY = 0.0;
+
+        if (distance > 1.0e-14)
+        {
+            dirX = rx/distance;
+            dirY = ry/distance;
+        }
+
+        KernelResult result;
+
+        if (kernel == "gaussian")
+        {
+            result =
+                gaussian(q,h,dirX,dirY);
+        }
+        else if (kernel == "cubic")
+        {
+            result =
+                cubicSpline(q,h,dirX,dirY);
+        }
+        else if (kernel == "wendland")
+        {
+            result =
+                Wendland(q,h,dirX,dirY);
+        }
+        else
+        {
+            throw invalid_argument(
+                "Kernel must be gaussian, cubic, or wendland.");
+        }
+
+        if (abs(result.Weight) < 1.0e-14)
+        {
+            continue;
+        }
+
+        if (!isfinite(rhoState[j]) ||
+            rhoState[j] <= 0.0)
+        {
+            continue;
+        }
+
+        neighborCount++;
+
+        // Fixed Eulerian particle/control volume
+        double Vj = Vi[j];
+
+        // Shepard interpolation
+        shepardNumerator +=
+            rhoState[j]*
+            result.Weight*
+            Vj;
+
+        shepardDenominator +=
+            result.Weight*
+            Vj;
+
+        // x_j - x_g and y_j - y_g
+        double dx =
+            -rx;
+
+        double dy =
+            -ry;
+
+        double dA[matrixSize][matrixSize] =
+        {
+            {
+                result.Weight*Vj,
+                result.Weight*Vj*dx,
+                result.Weight*Vj*dy
+            },
+            {
+                result.dWeightX*Vj,
+                result.dWeightX*Vj*dx,
+                result.dWeightX*Vj*dy
+            },
+            {
+                result.dWeightY*Vj,
+                result.dWeightY*Vj*dx,
+                result.dWeightY*Vj*dy
+            }
+        };
+
+        double db[matrixSize] =
+        {
+            rhoState[j]*
+            result.Weight*Vj,
+
+            rhoState[j]*
+            result.dWeightX*Vj,
+
+            rhoState[j]*
+            result.dWeightY*Vj
+        };
+
+        for (int row = 0;
+             row < matrixSize;
+             ++row)
+        {
+            for (int column = 0;
+                 column < matrixSize;
+                 ++column)
+            {
+                A[row][column] +=
+                    dA[row][column];
+            }
+
+            b[row] +=
+                db[row];
+        }
+    }
+
+    const int minMdbcNeighbors = 4;
+    const double dryTolerance = 1.0e-12;
+    const double supportTolerance = 0.4;
+
+    bool hasFluid =
+        shepardDenominator >
+        dryTolerance;
+
+    bool hasGoodSupport =
+        shepardDenominator >
+        supportTolerance;
+
+    bool solved = false;
+
+    if (hasGoodSupport &&
+        neighborCount >= minMdbcNeighbors)
+    {
+        solved =
+            solveLinear(
+                A,b,X,matrixSize);
+    }
+
+    if (!hasFluid)
+    {
+        rhoGhostOut = rho0;
+
+        drhoGhostXOut = 0.0;
+        drhoGhostYOut = 0.0;
+    }
+    else if (solved)
+    {
+        rhoGhostOut = X[0];
+
+        drhoGhostXOut = X[1];
+        drhoGhostYOut = X[2];
+    }
+    else
+    {
+        rhoGhostOut =
+            shepardNumerator/
+            shepardDenominator;
+
+        drhoGhostXOut = 0.0;
+        drhoGhostYOut = 0.0;
+    }
+
+    rhoBoundaryOut =
+        rhoGhostOut
+        + drhoGhostXOut*
+          (xState[i] - xGhost[i])
+        + drhoGhostYOut*
+          (yState[i] - yGhost[i]);
+
+    // only prevent nonphysical density
+    rhoBoundaryOut =
+        max(rhoBoundaryOut,
+            1.0e-6*rho0);
+}
+// ------------------------------------------------------------
+// Riemann Invariants
+// ------------------------------------------------------------
+
+void applyRiemannBufferBoundary(
+    vector<double>& u,
+    vector<double>& v,
+    vector<double>& rho,
+    const vector<double>& theta,
+    int NTheta,
+    int Nr,
+    int NrTotal)
+{
+    for (int ir = Nr + 1; ir <= NrTotal; ++ir)
+    {
+        for (int k = 0; k < NTheta; ++k)
+        {
+            // Buffer particle
+            int i = ir*NTheta + k;
+
+            // Last physical-fluid particle
+            // at the same theta
+            int j = Nr*NTheta + k;
+
+            double nx = cos(theta[i]);
+            double ny = sin(theta[i]);
+
+            double tx = -ny;
+            double ty =  nx;
+
+            // Interior physical state
+            double unInterior =
+                u[j]*nx + v[j]*ny;
+
+            double utInterior =
+                u[j]*tx + v[j]*ty;
+
+            double cInterior =
+                c0*pow(
+                    rho[j]/rho0,
+                    0.5*(gammaEOS-1.0));
+
+            // Leaving computational domain
+            double Jplus =
+                unInterior
+                + 2.0*cInterior/
+                  (gammaEOS-1.0);
+
+            // Far field
+            double unFar =
+                inletVelocity*nx;
+
+            double utFar =
+                inletVelocity*tx;
+
+            double Jminus =
+                unFar
+                - 2.0*c0/
+                  (gammaEOS-1.0);
+
+            // Reconstruct
+            double unBuffer =
+                0.5*(Jplus + Jminus);
+
+            double cBuffer =
+                0.25*(gammaEOS-1.0)
+                *(Jplus-Jminus);
+
+            cBuffer =
+                max(cBuffer,1.0e-8);
+
+            rho[i] =
+                rho0*pow(
+                    cBuffer/c0,
+                    2.0/(gammaEOS-1.0));
+
+            double utBuffer;
+
+            if (unFar < 0.0)
+            {
+                // inflow
+                utBuffer = utFar;
+            }
+            else
+            {
+                // outflow
+                utBuffer = utInterior;
+            }
+
+            u[i] =
+                unBuffer*nx
+                + utBuffer*tx;
+
+            v[i] =
+                unBuffer*ny
+                + utBuffer*ty;
+        }
+    }
+}
+
+// --------------------------------------------------
+// Validate cylinder pressure-force integration
+// using analytical inviscid potential flow
+// --------------------------------------------------
+
+void validatePotentialFlowForce(
+    const vector<double>& theta,
+    int Nboundary,
+    double r0,
+    double dTheta,
+    double rhoInf,
+    double UInf,
+    double Dcylinder,
+    const string& foldername)
+{
+    double dynamicPressure =
+        0.5*rhoInf*UInf*UInf;
+
+    double forceReference =
+        dynamicPressure*Dcylinder;
+
+    double Fx = 0.0;
+    double Fy = 0.0;
+
+    string filename =
+        foldername
+        + "/PotentialFlowValidation.csv";
+
+    ofstream file(filename);
+
+    file
+        << "ID,theta,CpExact,pExact,"
+        << "nx,ny,ds,dFx,dFy"
+        << endl;
+
+    for (int i = 0;
+         i < Nboundary;
+         ++i)
+    {
+        double th =
+            theta[i];
+
+        // Outward normal from cylinder into fluid
+        double nx =
+            cos(th);
+
+        double ny =
+            sin(th);
+
+        // Analytical potential-flow pressure coefficient
+        double CpExact =
+            1.0
+            - 4.0*sin(th)*sin(th);
+
+        // Gauge pressure: p_inf = 0
+        double pExact =
+            dynamicPressure*CpExact;
+
+        // Arc represented by this boundary particle
+        double ds =
+            r0*dTheta;
+
+        // Pressure force on cylinder
+        double dFx =
+            -pExact*nx*ds;
+
+        double dFy =
+            -pExact*ny*ds;
+
+        Fx += dFx;
+        Fy += dFy;
+
+        file
+            << i << ","
+            << th << ","
+            << CpExact << ","
+            << pExact << ","
+            << nx << ","
+            << ny << ","
+            << ds << ","
+            << dFx << ","
+            << dFy
+            << endl;
+    }
+
+    double CD =
+        Fx/forceReference;
+
+    double CL =
+        Fy/forceReference;
+
+    file << endl;
+
+    file
+        << "Fx" << ","
+        << Fx << endl;
+
+    file
+        << "Fy" << ","
+        << Fy << endl;
+
+    file
+        << "CD" << ","
+        << CD << endl;
+
+    file
+        << "CL" << ","
+        << CL << endl;
+
+    file.close();
+
+    cout << endl;
+    cout << "====================================" << endl;
+    cout << "Potential-flow force validation" << endl;
+    cout << "====================================" << endl;
+
+    cout << "Fx = "
+         << Fx << endl;
+
+    cout << "Fy = "
+         << Fy << endl;
+
+    cout << "CD = "
+         << CD << endl;
+
+    cout << "CL = "
+         << CL << endl;
+
+    cout << "Exact CD = 0" << endl;
+    cout << "Exact CL = 0" << endl;
+
+    cout << "Validation file: "
+         << filename << endl;
+
+    cout << "===================================="
+         << endl;
+}
 
 
 // ------------------------------------------------------------
@@ -513,6 +1024,8 @@ vector<double> dvdthalf;
 
 vector<double> mass;
 vector<double> Vi;
+
+vector<double> vorticity;
 
 
 
@@ -653,7 +1166,7 @@ int main()
     // ------------------------------------------------------------
     
     
-    for (int ir = 1; ir <= Nr; ++ir)
+    for (int ir = 1; ir <= NrTotal; ++ir)
     {
         double rp = Bpolar*(pow(qA,ir)-1)+r0;
 
@@ -672,7 +1185,8 @@ int main()
             
 
             cout << "ID: " << i
-                << "  Type: Fluid"
+                << "  Type: "
+                << ((ir <= Nr) ? "Fluid" : "Buffer")
                 << "  r: " << rp
                 << "  theta: " << thetap
                 << "  x: " << xp
@@ -686,12 +1200,15 @@ int main()
     }
 
     int Nparticles = i;
-    int Nfluid = Nparticles-Nboundary;
+    int NfluidEnd = (Nr + 1)*NTheta;
+    int Nfluid = NfluidEnd - Nboundary;
+    int NbufferParticles = Nparticles - NfluidEnd;
 
     cout << endl;
     cout << "Ntheta     = " << NTheta << endl;
     cout << "Nboundary  = " << Nboundary << endl;
     cout << "Nfluid     = " << Nfluid << endl;
+    cout << "Nbufferparticles  = " << NbufferParticles << endl;
     cout << "Nparticles = " << Nparticles << endl;
 
 
@@ -776,6 +1293,15 @@ int main()
 
         rhonew.resize(Nparticles);
 
+        xghost.resize(Nboundary);
+        yghost.resize(Nboundary);
+
+        rhoghost.resize(Nboundary);
+        drhoghostX.resize(Nboundary);
+        drhoghostY.resize(Nboundary);
+
+        vorticity.resize(Nparticles);
+
 
 
 // --------------------------------------------------
@@ -784,44 +1310,75 @@ int main()
 // --------------------------------------------------
         for (int i = 0; i < Nparticles; i++)
         {
-            u[i] = 0.0;
-            v[i] = 0.0;
             rho[i] = rho0;
-            if (i / NTheta == Nr && x[i] < 0) 
+
+            if (i < Nboundary)
             {
+                // Cylinder
+                u[i] = 0.0;
+                v[i] = 0.0;
+            }
+            else
+            {
+                // Physical fluid + buffer
                 u[i] = inletVelocity;
                 v[i] = 0.0;
             }
-            drhodtexact[i] = -rho[i]*velcoefX;
-            pressureexact[i] = rho0*g*(waterheight-y[i]);
+
+            drhodtexact[i] =
+                -rho[i]*velcoefX;
+
+            pressureexact[i] =
+                rho0*g*(waterheight-y[i]);
         }
+
+        for (int i = 0; i < Nboundary; ++i)
+        {
+            // Corresponding particle on first fluid ring
+            int j = i + NTheta;
+
+            // Ghost point mirrored across the wall interface
+            double dg = r[j] - r[i];
+
+            double nx = cos(theta[i]);
+            double ny = sin(theta[i]);
+
+            xghost[i] = x[i] + dg*nx;
+            yghost[i] = y[i] + dg*ny;
+        }
+
+
 
 // ----------------------------------------------
 // Calculate Vi, mass and h for ALL particles
-//
+// ----------------------------------------------
+
         for (int i = 0; i < Nparticles; i++)
         {
-
             int ir = i/NTheta;
 
             double dri;
             double rin, rout;
-            
+
             if (ir == 0)
             {
                 dri =
                     0.5*(r[i + NTheta] - r[i]);
 
                 rin = r0;
-                rout = 0.5*(r[i] + r[i + NTheta]);
+                rout =
+                    0.5*(r[i] + r[i + NTheta]);
             }
-            else if (ir == Nr)
+            else if (ir == NrTotal)
             {
                 dri =
                     0.5*(r[i] - r[i - NTheta]);
 
-                rin = 0.5*(r[i] + r[i - NTheta]);
-                rout = R;
+                rin =
+                    0.5*(r[i] + r[i - NTheta]);
+
+                rout =
+                    r[i] + 0.5*(r[i] - r[i - NTheta]);
             }
             else
             {
@@ -829,22 +1386,27 @@ int main()
                     0.5*(r[i + NTheta]
                     - r[i - NTheta]);
 
-                rin = 0.5*(r[i] + r[i - NTheta]);
-                rout = 0.5*(r[i] + r[i + NTheta]);
+                rin =
+                    0.5*(r[i] + r[i - NTheta]);
+
+                rout =
+                    0.5*(r[i] + r[i + NTheta]);
             }
 
+            Vi[i] =
+                0.5*(rout*rout-rin*rin)*dTheta0;
 
-            Vi[i] = 0.5*(rout*rout - rin*rin)*dTheta0;
+            mass[i] =
+                rho[i]*Vi[i];
 
-            mass[i] = rho[i]*Vi[i];
+            double drthetai =
+                r[i]*dTheta0;
 
+            double dpi =
+                sqrt(dri*drthetai);
 
-            double drthetai = r[i]*dTheta0;
-
-            double dpi = sqrt(dri*drthetai);
-
-            hp[i] = coefh*dpi;
-
+            hp[i] =
+                coefh*dpi;
         }
 
 
@@ -852,7 +1414,7 @@ int main()
 // kernel consistency check
 // ----------------------------------------------
 
-        for (int i = 0; i < Nparticles; i++)
+        for (int i = Nboundary; i < NfluidEnd; i++)
         {
             PGauss[i] = 0.0;
             PCubic[i] = 0.0;
@@ -931,13 +1493,13 @@ int main()
             L2drhodtWedn += (drhodtWedn[i]-drhodtexact[i])*(drhodtWedn[i]-drhodtexact[i]);
             
         }
-        L2normPGauss = sqrt(L2PGauss/(Nparticles));
-        L2normPCubic = sqrt(L2PCubic/(Nparticles));
-        L2normPWedn = sqrt(L2PWedn/(Nparticles));
+        L2normPGauss = sqrt(L2PGauss/(Nfluid));
+        L2normPCubic = sqrt(L2PCubic/(Nfluid));
+        L2normPWedn = sqrt(L2PWedn/(Nfluid));
 
-        L2normdrhodtGauss = sqrt(L2drhodtGauss/(Nparticles));
-        L2normdrhodtCubic = sqrt(L2drhodtCubic/(Nparticles));
-        L2normdrhodtWedn = sqrt(L2drhodtWedn/(Nparticles)); 
+        L2normdrhodtGauss = sqrt(L2drhodtGauss/(Nfluid));
+        L2normdrhodtCubic = sqrt(L2drhodtCubic/(Nfluid));
+        L2normdrhodtWedn = sqrt(L2drhodtWedn/(Nfluid)); 
        
         
 
@@ -992,9 +1554,13 @@ int main()
             {
                 Type = "boundary";
             }
-            else
+            else if (i < NfluidEnd)
             {
                 Type = "fluid";
+            }
+            else
+            {
+                Type = "buffer";
             }
 
             file << i << ","
@@ -1002,22 +1568,30 @@ int main()
                 << theta[i] << ","
                 << x[i] << ","
                 << y[i] << ","
-                << Type << ",,"
-                << PGauss[i] << ","
-                << PCubic[i] << ","
-                << PWedn[i] << ",,"
-                << dPGaussX[i] << ","
-                << dPGaussY[i] << ",,"
-                << dPCubicX[i] << ","
-                << dPCubicY[i] << ",,"
-                << dPWednX[i] << ","
-                << dPWednY[i] << ",,"
-                << drhodtGauss[i] << ","
-                << drhodtCubic[i] << ","
-                << drhodtWedn[i] << ","
-                << endl;
-        }
+                << Type;
+            if (i >= Nboundary && i < NfluidEnd)
+            {
+                file << ",,"
+                    << PGauss[i] << ","
+                    << PCubic[i] << ","
+                    << PWedn[i] << ",,"
+                    << dPGaussX[i] << ","
+                    << dPGaussY[i] << ",,"
+                    << dPCubicX[i] << ","
+                    << dPCubicY[i] << ",,"
+                    << dPWednX[i] << ","
+                    << dPWednY[i] << ",,"
+                    << drhodtGauss[i] << ","
+                    << drhodtCubic[i] << ","
+                    << drhodtWedn[i];
+            }
+            else
+            {
+                file << ",,,,,,,,,,,,,,,,";
+            }
 
+            file << endl;
+        }
         file.close();
 
         cout << endl;
@@ -1025,38 +1599,270 @@ int main()
             << filename
             << endl;
 
-        // -----------------------------------------------------------------------------------------------------------------------------
-        // start time loop
-        // -----------------------------------------------------------------------------------------------------------------------------
+        validatePotentialFlowForce(
+            theta,
+            Nboundary,
+            r0,
+            dTheta0,
+            rho0,
+            inletVelocity,
+            Dcylinder,
+            foldername);
+
+// -----------------------------------------------------------------------------------------------------------------------------
+// start time loop
+// -----------------------------------------------------------------------------------------------------------------------------
 
         double t = 0.0;
         int n = 0;
         double nextOutputTime = 0.0;
 
+        ofstream forceFile(
+            foldername
+            + "/CylinderForces_hdp_"
+            + to_string(coefh)
+            + ".csv");
+
+        forceFile
+            << "t,"
+            << "FxPressure,FyPressure,"
+            << "FxViscous,FyViscous,"
+            << "Fx,Fy,"
+            << "CD,CL"
+            << endl;
+
         while (t < Totaltime)
         {
 
+
 // -----------------------------------------------------------------------------------------------------------------------------
-// Compute Pressure at n
+// mDBC Interpolation at n
+// -----------------------------------------------------------------------------------------------------------------------------
+
+            for (int i = 0; i < Nboundary; ++i)
+            {
+                double rhoBoundary;
+
+                interpolateMDBC(
+                    i,
+                    Nboundary,
+                    NfluidEnd,
+                    NTheta,
+
+                    x,
+                    y,
+                    rho,
+
+                    xghost,
+                    yghost,
+
+                    Vi,
+                    hp,
+
+                    kernel,
+
+                    rhoghost[i],
+                    drhoghostX[i],
+                    drhoghostY[i],
+                    rhoBoundary);
+
+                rho[i] = rhoBoundary;
+
+                // Stationary no-slip cylinder
+                u[i] = 0.0;
+                v[i] = 0.0;
+            }
+
+            applyRiemannBufferBoundary(
+                u,
+                v,
+                rho,
+                theta,
+                NTheta,
+                Nr,
+                NrTotal);
+
+
+// -----------------------------------------------------------------------------------------------------------------------------
+// Compute Pressure and Force at n
 // -----------------------------------------------------------------------------------------------------------------------------        
             
             for (int i = 0; i < Nparticles; i++)
             {
                 pressure[i] = B*(pow(rho[i]/rho0,gammaEOS)-1.0);                         
             }
+
+
+            double FxPressure = 0.0;
+            double FyPressure = 0.0;
+
+            double FxViscous = 0.0;
+            double FyViscous = 0.0;
+
+            // Dynamic viscosity
+            double mu = rho0*viscosity;
+
+            for (int i = 0; i < Nboundary; ++i)
+            {
+                double nx = cos(theta[i]);
+                double ny = sin(theta[i]);
+
+                double tx = -ny;
+                double ty =  nx;
+
+                // Arc length represented by boundary particle
+                double ds = r0*dTheta0;
+
+                // -----------------------------------------
+                // Pressure force
+                // -----------------------------------------
+
+                FxPressure +=
+                    -pressure[i]*nx*ds;
+
+                FyPressure +=
+                    -pressure[i]*ny*ds;
+
+
+                // -----------------------------------------
+                // Approximate viscous wall shear
+                // using first physical-fluid ring
+                // -----------------------------------------
+
+                int j = i + NTheta;
+
+                double dr =
+                    r[j] - r[i];
+
+                double utFluid =
+                    u[j]*tx
+                    + v[j]*ty;
+
+                // Stationary cylinder: ut_wall = 0
+                double tauWall =
+                    mu*utFluid/dr;
+
+                FxViscous +=
+                    tauWall*tx*ds;
+
+                FyViscous +=
+                    tauWall*ty*ds;
+            }
+
+            double Fx = FxPressure + FxViscous;
+            double Fy = FyPressure + FyViscous;
+            double forceReference = 0.5 * rho0 * inletVelocity * inletVelocity * Dcylinder;
+            double CD = Fx/forceReference;
+            double CL = Fy/forceReference;
+
+            forceFile
+                << t << ","
+                << FxPressure << ","
+                << FyPressure << ","
+                << FxViscous << ","
+                << FyViscous << ","
+                << Fx << ","
+                << Fy << ","
+                << CD << ","
+                << CL
+                << endl;
+
+
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Kinetic Energy
 // -----------------------------------------------------------------------------------------------------------------------------
             double KE = 0.0;
-            for (int i = Nboundary; i < Nparticles; i++)
+            for (int i = Nboundary; i < NfluidEnd; i++)
             {
                 KE += 0.5 * mass[i]* ((u[i]*u[i])+(v[i]*v[i]));
             }
+
+// -----------------------------------------------------------------------------------------------------------------------------
+// Compute Vorticity
+// -----------------------------------------------------------------------------------------------------------------------------
+
+            for (int i = Nboundary;
+                i < NfluidEnd;
+                ++i)
+            {
+                vorticity[i] = 0.0;
+
+                for (int j = 0;
+                    j < Nparticles;
+                    ++j)
+                {
+                    double rx = x[i]-x[j];
+                    double ry = y[i]-y[j];
+
+                    double r2 =
+                        rx*rx + ry*ry;
+
+                    if (r2 < 1.0e-14)
+                    {
+                        continue;
+                    }
+
+                    if ((kernel == "cubic" ||
+                        kernel == "wendland") &&
+                        r2 > 4.0*hp[i]*hp[i])
+                    {
+                        continue;
+                    }
+
+                    double distance =
+                        sqrt(r2);
+
+                    double q =
+                        distance/hp[i];
+
+                    if (kernel == "gaussian" &&
+                        q > 3.0)
+                    {
+                        continue;
+                    }
+
+                    double dirX =
+                        rx/distance;
+
+                    double dirY =
+                        ry/distance;
+
+                    KernelResult result;
+
+                    if (kernel == "gaussian")
+                        result =
+                            gaussian(q,hp[i],dirX,dirY);
+
+                    else if (kernel == "cubic")
+                        result =
+                            cubicSpline(q,hp[i],dirX,dirY);
+
+                    else
+                        result =
+                            Wendland(q,hp[i],dirX,dirY);
+
+                    double du =
+                        u[j]-u[i];
+
+                    double dv =
+                        v[j]-v[i];
+
+                    vorticity[i] +=
+                        Vi[j]*
+                        (
+                            dv*result.dWeightX
+                            -
+                            du*result.dWeightY
+                        );
+                }
+            }
+
+
 // -----------------------------------------------------------------------------------------------------------------------------
 // Fluid Continuity and Momentum at n
 // -----------------------------------------------------------------------------------------------------------------------------
             //#pragma omp parallel for
-            for (int i = 0; i < Nparticles; i++)
+            for (int i = Nboundary; i < NfluidEnd; i++)
             {
                 //cummulative should be initialised with zero for each particle
 
@@ -1082,6 +1888,7 @@ int main()
             double dt = CFL*calculateDt(
                 Nboundary,
                 Nparticles,
+                NfluidEnd,
                 x,
                 y,
                 u,
@@ -1120,14 +1927,14 @@ int main()
             double L2drhodt = 0.0;
             double L2pressure = 0.0;           
 
-            for (int i = Nboundary; i < Nparticles; i++)
+            /*for (int i = Nboundary; i < NfluidEnd; i++)
             {
                 double errordrhodt = (drhodt[i]-drhodtexact[i])*(drhodt[i]-drhodtexact[i]);
                 double errorpressure = (pressure[i]-pressureexact[i])*(pressure[i]-pressureexact[i]);
                 
                 L2drhodt += errordrhodt;
                 L2pressure += errorpressure;
-            }
+            }*/
  
             double L2normdrhodt = sqrt(L2drhodt/(Nfluid));
             double L2normpressure = sqrt(L2pressure/Nfluid);
@@ -1143,22 +1950,26 @@ int main()
 
                 ofstream file(filename);
                 file << "h/dp :" << "," << coefh << endl;
-                file << "L2norm Pressure" << "," << "KE" << "," << "dr0" << ","  << "Nparticles" << endl;
+                file << "L2norm Pressure" << "," << "KE" << "," << "dr0" << ","  << "Nfluid" << endl;
                 file << L2normpressure << "," << KE << "," << dr0 << "," << Nfluid <<endl;
                 file << endl;
                 file << "t" << "," << t << endl;
-                file << "ID"<< ","<< "x"<< "," << "y" << ","<< ","<<"rho"<< "," << "drhodt" << "," << "pressure"<< "," << "," << "u" << "," << "v" << "," << "," << "dudt" << "," << "dvdt" <<"," << "type" << endl;
+                file << "ID"<< ","<< "x"<< "," << "y" << ","<< ","<<"rho"<< "," << "drhodt" << "," << "pressure"<< "," << "," << "u" << "," << "v" << "," << "velocity" << "," << "," << "dudt" << "," << "dvdt" <<","<< "vorticity" <<"," << "type" << endl;
                 for (int i = 0; i < Nparticles; i++)
                     {
                         if (i < Nboundary)
                         {
                             type = "boundary";
                         }
-                        else
+                        else if (i < NfluidEnd)
                         {
                             type = "fluid";
                         }
-                        file << i << "," << x[i] << "," << y[i] << "," << "," << rho[i] << "," << drhodt[i] << "," << pressure[i] << "," << "," << u[i] << "," << v[i] << "," << "," << dudt[i] << "," << dvdt[i] << "," << type << endl;
+                        else
+                        {
+                            type = "buffer";
+                        }
+                        file << i << "," << x[i] << "," << y[i] << "," << "," << rho[i] << "," << drhodt[i] << "," << pressure[i] << "," << "," << u[i] << "," << v[i] << "," << sqrt(u[i]*u[i] + v[i]*v[i]) << "," << "," << dudt[i] << "," << dvdt[i] << ","<< ((i >= Nboundary && i < NfluidEnd)? vorticity[i]: 0.0) << "," << type << endl;
                     }
            
                 file.close();
@@ -1170,16 +1981,23 @@ int main()
 // Compute Time integration predictor for fluid to n+1/2
 // -----------------------------------------------------------------------------------------------------------------------------
 
-            for (int i = Nboundary; i < Nparticles; i++)
+            for (int i = Nboundary;i < NfluidEnd;i++)
             {
-                rhohalf[i] = rho[i]+drhodt[i]*dt/2;
-                uhalf[i] = u[i]+dudt[i]*dt/2;
-                vhalf[i] = v[i]+(dvdt[i])*dt/2;
-                if (i / NTheta == Nr && x[i] < 0)
-                {
-                    uhalf[i] = u[i];
-                    vhalf[i] = v[i];
-                }
+                rhohalf[i] =
+                    rho[i] + drhodt[i]*dt/2.0;
+
+                uhalf[i] =
+                    u[i] + dudt[i]*dt/2.0;
+
+                vhalf[i] =
+                    v[i] + dvdt[i]*dt/2.0;
+
+                xhalf[i] = x[i];
+                yhalf[i] = y[i];
+            }
+
+            for (int i = NfluidEnd;i < Nparticles;++i)
+            {
                 xhalf[i] = x[i];
                 yhalf[i] = y[i];
             }
@@ -1190,12 +2008,50 @@ int main()
 
             for (int i = 0; i < Nboundary; i++)
             {
-                rhohalf[i] = rho[i]+drhodt[i]*dt/2;
-                uhalf[i] = 0.0;
-                vhalf[i] = 0.0;
+
                 xhalf[i] = x[i];
                 yhalf[i] = y[i];
+
+
+                double rhoBoundary;
+
+                interpolateMDBC(
+                    i,
+                    Nboundary,
+                    NfluidEnd,
+                    NTheta,
+
+                    xhalf,
+                    yhalf,
+                    rhohalf,
+
+                    xghost,
+                    yghost,
+
+                    Vi,
+                    hp,
+
+                    kernel,
+
+                    rhoghost[i],
+                    drhoghostX[i],
+                    drhoghostY[i],
+                    rhoBoundary);
+
+                rhohalf[i] = rhoBoundary;
+
+                uhalf[i] = 0.0;
+                vhalf[i] = 0.0;
             }
+
+            applyRiemannBufferBoundary(
+                uhalf,
+                vhalf,
+                rhohalf,
+                theta,
+                NTheta,
+                Nr,
+                NrTotal);
 
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1211,7 +2067,7 @@ int main()
 // Fluid Continuity and Momentum at n+1/2
 // -----------------------------------------------------------------------------------------------------------------------------
             //#pragma omp parallel for
-            for (int i = 0; i < Nparticles; i++)
+            for (int i = Nboundary; i < NfluidEnd; i++)
             {
                 //cummulative should be initialised with zero for each particle
 
@@ -1238,50 +2094,81 @@ int main()
 // Compute Time integration corrector for fluid to n+1/2
 // -----------------------------------------------------------------------------------------------------------------------------
 
-            for (int i = Nboundary; i < Nparticles; i++)
+            for (int i = Nboundary; i < NfluidEnd; i++)
             {
                 rhohalf[i] = rho[i]+drhodthalf[i]*dt/2;
                 uhalf[i] = u[i]+dudthalf[i]*dt/2;
                 vhalf[i] = v[i]+(dvdthalf[i])*dt/2;
-                if (i / NTheta == Nr && x[i] < 0)
-                {
-                    uhalf[i] = u[i];
-                    vhalf[i] = v[i];
-                }
                 xhalf[i] = x[i];
                 yhalf[i] = y[i];
             }
+
+            for (int i = NfluidEnd;i < Nparticles;++i)
+            {
+                xhalf[i] = x[i];
+                yhalf[i] = y[i];
+            }
+
+
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Time integration corrector for boundary to n+1/2
 // -----------------------------------------------------------------------------------------------------------------------------
 
-            for (int i = 0; i < Nboundary; i++)
+            for (int i = 0; i < Nboundary; ++i)
             {
-                rhohalf[i] = rho[i]+drhodthalf[i]*dt/2;
-                uhalf[i] = 0.0;
-                vhalf[i] = 0.0;
                 xhalf[i] = x[i];
                 yhalf[i] = y[i];
+
+                double rhoBoundary;
+
+                interpolateMDBC(
+                    i,
+                    Nboundary,
+                    NfluidEnd,
+                    NTheta,
+
+                    xhalf,
+                    yhalf,
+                    rhohalf,
+
+                    xghost,
+                    yghost,
+
+                    Vi,
+                    hp,
+
+                    kernel,
+
+                    rhoghost[i],
+                    drhoghostX[i],
+                    drhoghostY[i],
+                    rhoBoundary);
+
+                rhohalf[i] = rhoBoundary;
+
+                uhalf[i] = 0.0;
+                vhalf[i] = 0.0;
             }
+
+            applyRiemannBufferBoundary(
+                uhalf,
+                vhalf,
+                rhohalf,
+                theta,
+                NTheta,
+                Nr,
+                NrTotal);
 
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Time integration to n+1
 // -----------------------------------------------------------------------------------------------------------------------------
 
-// For Boundary
-            for (int i = 0; i < Nboundary; i++)
-            {
-                rhonew[i] = 2*rhohalf[i]-rho[i];
-                unew[i] = 0.0;
-                vnew[i] = 0.0;
-                xnew[i] = xhalf[i];
-                ynew[i] = yhalf[i];
-            }
+
 
 // For Fluid          
-            for (int i = Nboundary; i < Nparticles; i++)
+            for (int i = Nboundary; i < NfluidEnd; i++)
             {
                 rhonew[i] = 2*rhohalf[i]-rho[i];
                 unew[i] = 2*uhalf[i]-u[i];
@@ -1289,6 +2176,62 @@ int main()
                 xnew[i] = xhalf[i];
                 ynew[i] = yhalf[i];
             }
+
+            for (int i = NfluidEnd;i < Nparticles; ++i)
+            {
+                xnew[i] = x[i];
+                ynew[i] = y[i];
+            }
+
+
+// For Boundary
+            for (int i = 0; i < Nboundary; i++)
+            {
+                unew[i] = 0.0;
+                vnew[i] = 0.0;
+                xnew[i] = xhalf[i];
+                ynew[i] = yhalf[i];
+
+                double rhoBoundary;
+
+                interpolateMDBC(
+                    i,
+                    Nboundary,
+                    NfluidEnd,
+                    NTheta,
+
+                    xnew,
+                    ynew,
+                    rhonew,
+
+                    xghost,
+                    yghost,
+
+                    Vi,
+                    hp,
+
+                    kernel,
+
+                    rhoghost[i],
+                    drhoghostX[i],
+                    drhoghostY[i],
+                    rhoBoundary);
+
+                rhonew[i] = rhoBoundary;
+
+
+            }
+
+            applyRiemannBufferBoundary(
+                unew,
+                vnew,
+                rhonew,
+                theta,
+                NTheta,
+                Nr,
+                NrTotal);
+
+
 
 
            
@@ -1316,6 +2259,8 @@ int main()
         n++;
         
         }
+        
+        forceFile.close();
 
 
 
@@ -1333,5 +2278,4 @@ int main()
         << " seconds" << endl;
     cout << "==============================" << endl;
 
-    
 }

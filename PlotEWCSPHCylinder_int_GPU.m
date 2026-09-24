@@ -6,7 +6,7 @@ function PlotEWCSPHCylinder_Streamlines_GPU
 % ==========================================================
 
 simulationFolder = ...
-    "EWCSPHCylinder_dr0_0.014142_Nr_31_Ntheta_22_Rr0_20.000000";
+    "EWCSPHCylinder_dr0_0.014142_Nr_30_Ntheta_22_Rr0_20.000000";
 
 % Choose ONE h/dp case written by the C++ code:
 hCoefficient = 2;
@@ -126,7 +126,7 @@ firstFilename = fullfile(files(1).folder,files(1).name);
 % Line 6 : particle header
 % Line 7+: particle data
 
-opts = delimitedTextImportOptions("NumVariables",14);
+opts = delimitedTextImportOptions("NumVariables",16);
 
 opts.DataLines = [7 Inf];
 opts.Delimiter = ",";
@@ -142,9 +142,11 @@ opts.VariableNames = ...
      "empty2", ...
      "u", ...
      "v", ...
+     "velocity", ...
      "empty3", ...
      "dudt", ...
      "dvdt", ...
+     "vorticity", ...
      "Type"];
 
 opts.VariableTypes = ...
@@ -158,7 +160,9 @@ opts.VariableTypes = ...
      "string", ...
      "double", ...
      "double", ...
+     "double", ...
      "string", ...
+     "double", ...
      "double", ...
      "double", ...
      "string"];
@@ -169,8 +173,8 @@ opts.VariableTypes = ...
 % ==========================================================
 
 % x and y are stored too, but are not colour-field choices.
-% velocity is derived only for visualisation:
-% velocity = sqrt(u^2 + v^2)
+% All numerical fields below are read directly from the C++ output.
+% MATLAB only displays/interpolates them for visualisation.
 
 cacheNames = ...
     ["x", ...
@@ -236,14 +240,16 @@ type0 = lower(strtrim(string(T0.Type)));
 
 boundary = type0 == "boundary";
 fluid = type0 == "fluid";
+buffer = type0 == "buffer";
 
 boundaryRows = find(boundary);
 fluidRows = find(fluid);
+bufferRows = find(buffer);
 
 numberOfParticles = height(T0);
 
 
-if any(~(boundary | fluid))
+if any(~(boundary | fluid | buffer))
     error("Invalid particle Type in the first frame.");
 end
 
@@ -377,11 +383,7 @@ for k = 1:numberOfFrames
     end
 
 
-    %% Derived velocity magnitude
-
-    velocity = sqrt(T.u.^2 + T.v.^2);
-    vorticity = calculateVorticity(T.x,T.y,T.u,T.v);
-
+    %% Numerical fields are supplied directly by C++
 
     %% Cache the numerical data
 
@@ -393,10 +395,10 @@ for k = 1:numberOfFrames
          T.pressure, ...
          T.u, ...
          T.v, ...
-         velocity, ...
+         T.velocity, ...
          T.dudt, ...
          T.dvdt, ...
-         vorticity];
+         T.vorticity];
 
 
     if gpuEnabled
@@ -673,12 +675,39 @@ lastButton = uicontrol( ...
     'Position',[0.33 0.065 0.055 0.055]);
 
 
+comparisonButton = uicontrol( ...
+    fig, ...
+    'Style','pushbutton', ...
+    'String','SPH vs Exact', ...
+    'Units','normalized', ...
+    'Position',[0.395 0.065 0.085 0.055], ...
+    'TooltipString','Compare C++ SPH outputs with C++ analytical potential-flow outputs');
+
+
 historyButton = uicontrol( ...
     fig, ...
     'Style','pushbutton', ...
     'String','History', ...
     'Units','normalized', ...
-    'Position',[0.395 0.065 0.075 0.055]);
+    'Position',[0.07 0.015 0.075 0.043]);
+
+
+forceButton = uicontrol( ...
+    fig, ...
+    'Style','pushbutton', ...
+    'String','Forces', ...
+    'Units','normalized', ...
+    'Position',[0.15 0.015 0.075 0.043], ...
+    'TooltipString','Plot cylinder force history from the C++ force CSV');
+
+
+validationButton = uicontrol( ...
+    fig, ...
+    'Style','pushbutton', ...
+    'String','Validation', ...
+    'Units','normalized', ...
+    'Position',[0.23 0.015 0.09 0.043], ...
+    'TooltipString','Plot analytical potential-flow pressure/force validation');
 
 
 saveVideoButton = uicontrol( ...
@@ -686,7 +715,7 @@ saveVideoButton = uicontrol( ...
     'Style','pushbutton', ...
     'String','Save MP4', ...
     'Units','normalized', ...
-    'Position',[0.395 0.015 0.075 0.043], ...
+    'Position',[0.33 0.015 0.075 0.043], ...
     'TooltipString','Save all loaded frames as an MP4 animation');
 
 
@@ -777,6 +806,12 @@ nextButton.Callback = @(~,~)stepFrame(1);
 lastButton.Callback = @(~,~)showFrame(numberOfFrames);
 
 historyButton.Callback = @showSelectedHistory;
+
+forceButton.Callback = @showForceHistory;
+
+validationButton.Callback = @showPotentialFlowValidation;
+
+comparisonButton.Callback = @showSPHAnalyticalComparison;
 
 saveVideoButton.Callback = @saveAnimation;
 
@@ -1232,8 +1267,8 @@ showFrame(1);
         % Save current interface state.
         controls = [ ...
             firstButton,backButton,playButton,nextButton,lastButton, ...
-            historyButton,saveVideoButton,parameterText,parameterMenu, ...
-            frameSlider,frameLabel];
+            comparisonButton,historyButton,forceButton,validationButton,saveVideoButton, ...
+            parameterText,parameterMenu,frameSlider,frameLabel];
 
         controlVisibility = get(controls,'Visible');
         oldAxesPosition = ax.Position;
@@ -1588,6 +1623,717 @@ showFrame(1);
     end
 
 
+    %% ---------------------------------------------------------
+    % Cylinder force history from C++ output
+    % ----------------------------------------------------------
+
+    function showForceHistory(~,~)
+
+        stopPlayback;
+
+        forceFiles = dir(fullfile( ...
+            simulationFolder, ...
+            "CylinderForces_hdp_*.csv"));
+
+        if isempty(forceFiles)
+            errordlg( ...
+                'No CylinderForces_hdp_*.csv file was found.', ...
+                'Force file not found');
+            return;
+        end
+
+        forceH = nan(numel(forceFiles),1);
+
+        for kk = 1:numel(forceFiles)
+
+            token = regexp( ...
+                forceFiles(kk).name, ...
+                ['CylinderForces_hdp_(' numberPattern ')\.csv$'], ...
+                'tokens', ...
+                'once');
+
+            if ~isempty(token)
+                forceH(kk) = str2double(token{1});
+            end
+
+        end
+
+        matchingForce = ...
+            isfinite(forceH) & ...
+            abs(forceH-hCoefficient) <= hTolerance;
+
+        if ~any(matchingForce)
+            errordlg( ...
+                sprintf( ...
+                    'No cylinder-force file was found for h/dp = %.6g.', ...
+                    hCoefficient), ...
+                'Force file not found');
+            return;
+        end
+
+        forceIndex = find(matchingForce,1);
+
+        forceFilename = fullfile( ...
+            forceFiles(forceIndex).folder, ...
+            forceFiles(forceIndex).name);
+
+        F = readtable(forceFilename);
+
+        requiredForceColumns = ...
+            ["t","FxPressure","FyPressure", ...
+             "FxViscous","FyViscous", ...
+             "Fx","Fy","CD","CL"];
+
+        if ~all(ismember(requiredForceColumns,string(F.Properties.VariableNames)))
+            errordlg( ...
+                'The cylinder-force CSV does not contain the expected columns.', ...
+                'Invalid force file');
+            return;
+        end
+
+        forceFigure = figure( ...
+            'Color','w', ...
+            'Position',[120 60 1150 760], ...
+            'Name','Cylinder force history', ...
+            'NumberTitle','off');
+
+        tiledlayout( ...
+            forceFigure, ...
+            2,2, ...
+            'TileSpacing','compact', ...
+            'Padding','compact');
+
+
+        nexttile;
+
+        plot(F.t,F.FxPressure,'LineWidth',1.2);
+        hold on;
+        plot(F.t,F.FxViscous,'LineWidth',1.2);
+        plot(F.t,F.Fx,'LineWidth',1.4);
+        hold off;
+
+        xlabel('Time (s)');
+        ylabel('F_x (N/m)');
+        title('Drag-direction force');
+        legend( ...
+            'Pressure','Viscous','Total', ...
+            'Location','best');
+        grid on;
+
+
+        nexttile;
+
+        plot(F.t,F.FyPressure,'LineWidth',1.2);
+        hold on;
+        plot(F.t,F.FyViscous,'LineWidth',1.2);
+        plot(F.t,F.Fy,'LineWidth',1.4);
+        hold off;
+
+        xlabel('Time (s)');
+        ylabel('F_y (N/m)');
+        title('Lift-direction force');
+        legend( ...
+            'Pressure','Viscous','Total', ...
+            'Location','best');
+        grid on;
+
+
+        nexttile;
+
+        plot(F.t,F.CD,'LineWidth',1.4);
+
+        xlabel('Time (s)');
+        ylabel('C_D');
+        title('Drag coefficient');
+        grid on;
+
+
+        nexttile;
+
+        plot(F.t,F.CL,'LineWidth',1.4);
+
+        xlabel('Time (s)');
+        ylabel('C_L');
+        title('Lift coefficient');
+        grid on;
+
+
+        sgtitle(sprintf( ...
+            'Cylinder forces, h/dp = %.2f', ...
+            hCoefficient));
+
+    end
+
+
+    %% ---------------------------------------------------------
+    % Analytical potential-flow pressure/force validation
+    % ----------------------------------------------------------
+
+    function showPotentialFlowValidation(~,~)
+
+        stopPlayback;
+
+        validationFilename = fullfile( ...
+            simulationFolder, ...
+            "PotentialFlowValidation.csv");
+
+        if ~isfile(validationFilename)
+            errordlg( ...
+                'PotentialFlowValidation.csv was not found.', ...
+                'Validation file not found');
+            return;
+        end
+
+        % C++ writes all boundary-point quantities. MATLAB only reads/plots.
+        validationData = readmatrix( ...
+            validationFilename, ...
+            'Range',sprintf('A2:I%d',numel(boundaryRows)+1));
+
+        if size(validationData,2) < 9 || isempty(validationData)
+            errordlg( ...
+                'PotentialFlowValidation.csv has an unexpected format.', ...
+                'Invalid validation file');
+            return;
+        end
+
+        thetaValidation = validationData(:,2);
+        CpExact = validationData(:,3);
+        pExact = validationData(:,4);
+        dFx = validationData(:,8);
+        dFy = validationData(:,9);
+
+        validRows = ...
+            isfinite(thetaValidation) & ...
+            isfinite(CpExact) & ...
+            isfinite(pExact) & ...
+            isfinite(dFx) & ...
+            isfinite(dFy);
+
+        thetaValidation = thetaValidation(validRows);
+        CpExact = CpExact(validRows);
+        pExact = pExact(validRows);
+        dFx = dFx(validRows);
+        dFy = dFy(validRows);
+
+        thetaDegrees = rad2deg(thetaValidation);
+
+        [thetaDegrees,validationOrder] = ...
+            sort(thetaDegrees);
+
+        CpExact = CpExact(validationOrder);
+        pExact = pExact(validationOrder);
+        dFx = dFx(validationOrder);
+        dFy = dFy(validationOrder);
+
+        % Read the integrated Fx, Fy, CD and CL exactly as written by C++.
+        rawValidation = readcell(validationFilename,'Delimiter',',');
+
+        FxValidation = readCppSummaryValue(rawValidation,"Fx",validationFilename);
+        FyValidation = readCppSummaryValue(rawValidation,"Fy",validationFilename);
+        CDValidation = readCppSummaryValue(rawValidation,"CD",validationFilename);
+        CLValidation = readCppSummaryValue(rawValidation,"CL",validationFilename);
+
+        validationFigure = figure( ...
+            'Color','w', ...
+            'Position',[130 60 1150 760], ...
+            'Name','Potential-flow validation', ...
+            'NumberTitle','off');
+
+        tiledlayout( ...
+            validationFigure, ...
+            2,2, ...
+            'TileSpacing','compact', ...
+            'Padding','compact');
+
+        nexttile;
+
+        plot( ...
+            thetaDegrees, ...
+            CpExact, ...
+            'o-', ...
+            'LineWidth',1.1, ...
+            'MarkerSize',4);
+
+        xlabel('\theta (deg)');
+        ylabel('C_p');
+        title('C++ potential-flow pressure coefficient');
+        grid on;
+
+        nexttile;
+
+        plot( ...
+            thetaDegrees, ...
+            pExact, ...
+            'o-', ...
+            'LineWidth',1.1, ...
+            'MarkerSize',4);
+
+        xlabel('\theta (deg)');
+        ylabel('p_{exact} (Pa)');
+        title('C++ potential-flow surface pressure');
+        grid on;
+
+        nexttile;
+
+        plot( ...
+            thetaDegrees, ...
+            dFx, ...
+            'o-', ...
+            'LineWidth',1.1, ...
+            'MarkerSize',4);
+
+        hold on;
+
+        plot( ...
+            thetaDegrees, ...
+            dFy, ...
+            'o-', ...
+            'LineWidth',1.1, ...
+            'MarkerSize',4);
+
+        hold off;
+
+        xlabel('\theta (deg)');
+        ylabel('Force contribution (N/m)');
+        title('C++ pressure-force contributions');
+        legend('dF_x','dF_y','Location','best');
+        grid on;
+
+        nexttile;
+
+        bar( ...
+            categorical({'C_D','C_L'}), ...
+            [CDValidation CLValidation]);
+
+        yline(0,'k-');
+
+        ylabel('Coefficient');
+        title(sprintf( ...
+            'C++ integrated: C_D = %.3e, C_L = %.3e', ...
+            CDValidation, ...
+            CLValidation));
+        grid on;
+
+        sgtitle(sprintf( ...
+            ['Potential-flow force validation from C++' ...
+             '   |   F_x = %.3e N/m, F_y = %.3e N/m'], ...
+            FxValidation, ...
+            FyValidation));
+
+        fprintf('\nPotential-flow validation read from C++: %s\n',validationFilename);
+        fprintf('Fx = %.16e N/m\n',FxValidation);
+        fprintf('Fy = %.16e N/m\n',FyValidation);
+        fprintf('CD = %.16e\n',CDValidation);
+        fprintf('CL = %.16e\n',CLValidation);
+
+    end
+
+
+    %% ---------------------------------------------------------
+    % Direct SPH-versus-analytical comparison
+    %
+    % IMPORTANT:
+    %   MATLAB does not recompute pressure, force, Cp, CD, or CL here.
+    %   SPH pressure/forces are read from the C++ timestep/force outputs.
+    %   Analytical pressure/forces are read from the C++ validation output.
+    %   MATLAB only matches particle/time indices and plots the C++ values.
+    % ----------------------------------------------------------
+
+    function showSPHAnalyticalComparison(~,~)
+
+        stopPlayback;
+
+        currentState = guidata(fig);
+        currentFrameIndex = currentState.index;
+        currentFrame = currentState.currentFrame;
+        currentTime = time(currentFrameIndex);
+
+
+        %% -----------------------------------------------------
+        % Read C++ analytical potential-flow output
+        % ------------------------------------------------------
+
+        validationFilename = fullfile( ...
+            simulationFolder, ...
+            "PotentialFlowValidation.csv");
+
+        if ~isfile(validationFilename)
+
+            errordlg( ...
+                'PotentialFlowValidation.csv was not found.', ...
+                'Validation file not found');
+
+            return;
+
+        end
+
+
+        validationData = readmatrix( ...
+            validationFilename, ...
+            'Range',sprintf('A2:I%d',numel(boundaryRows)+1));
+
+        if size(validationData,2) < 9 || isempty(validationData)
+
+            errordlg( ...
+                'PotentialFlowValidation.csv has an unexpected format.', ...
+                'Invalid validation file');
+
+            return;
+
+        end
+
+
+        validationID = validationData(:,1);
+        thetaValidation = validationData(:,2);
+        pExact = validationData(:,4);
+
+        validRows = ...
+            isfinite(validationID) & ...
+            isfinite(thetaValidation) & ...
+            isfinite(pExact);
+
+        validationID = validationID(validRows);
+        thetaValidation = thetaValidation(validRows);
+        pExact = pExact(validRows);
+
+
+        %% Match each analytical cylinder point to the same C++ SPH particle ID
+
+        [foundID,frameRows] = ismember(validationID,ID0);
+
+        if ~all(foundID) || any(~boundary(frameRows(foundID)))
+
+            errordlg( ...
+                ['Could not match every analytical cylinder point to ' ...
+                 'a C++ SPH boundary particle.'], ...
+                'Boundary-ID mismatch');
+
+            return;
+
+        end
+
+        % Pressure is column 5 in the cached C++ frame:
+        % [x y rho drhodt pressure u v velocity dudt dvdt vorticity]
+        pSPH = currentFrame(frameRows,5);
+
+        thetaDegrees = rad2deg(thetaValidation);
+
+        [thetaDegrees,comparisonOrder] = ...
+            sort(thetaDegrees);
+
+        pExact = pExact(comparisonOrder);
+        pSPH = pSPH(comparisonOrder);
+
+
+        %% Integrated analytical values written by C++
+
+        rawValidation = readcell(validationFilename,'Delimiter',',');
+
+        CDExact = ...
+            readCppSummaryValue( ...
+                rawValidation, ...
+                "CD", ...
+                validationFilename);
+
+        CLExact = ...
+            readCppSummaryValue( ...
+                rawValidation, ...
+                "CL", ...
+                validationFilename);
+
+
+        %% -----------------------------------------------------
+        % Read C++ SPH force history
+        % ------------------------------------------------------
+
+        forceFiles = dir(fullfile( ...
+            simulationFolder, ...
+            "CylinderForces_hdp_*.csv"));
+
+        if isempty(forceFiles)
+
+            errordlg( ...
+                'No CylinderForces_hdp_*.csv file was found.', ...
+                'Force file not found');
+
+            return;
+
+        end
+
+        forceH = nan(numel(forceFiles),1);
+
+        for kk = 1:numel(forceFiles)
+
+            token = regexp( ...
+                forceFiles(kk).name, ...
+                ['CylinderForces_hdp_(' numberPattern ')\.csv$'], ...
+                'tokens', ...
+                'once');
+
+            if ~isempty(token)
+                forceH(kk) = str2double(token{1});
+            end
+
+        end
+
+        matchingForce = ...
+            isfinite(forceH) & ...
+            abs(forceH-hCoefficient) <= hTolerance;
+
+        if ~any(matchingForce)
+
+            errordlg( ...
+                sprintf( ...
+                    'No cylinder-force file was found for h/dp = %.6g.', ...
+                    hCoefficient), ...
+                'Force file not found');
+
+            return;
+
+        end
+
+        forceIndex = find(matchingForce,1);
+
+        forceFilename = fullfile( ...
+            forceFiles(forceIndex).folder, ...
+            forceFiles(forceIndex).name);
+
+        F = readtable(forceFilename);
+
+        requiredForceColumns = ...
+            ["t","CD","CL"];
+
+        if ~all(ismember(requiredForceColumns,string(F.Properties.VariableNames)))
+
+            errordlg( ...
+                'The cylinder-force CSV does not contain t, CD, and CL.', ...
+                'Invalid force file');
+
+            return;
+
+        end
+
+
+        %% Use the C++ force sample nearest the currently displayed frame time
+
+        [~,nearestForceIndex] = ...
+            min(abs(F.t-currentTime));
+
+        currentCD = F.CD(nearestForceIndex);
+        currentCL = F.CL(nearestForceIndex);
+        forceTime = F.t(nearestForceIndex);
+
+
+        %% -----------------------------------------------------
+        % Plot comparison
+        % ------------------------------------------------------
+
+        comparisonFigure = figure( ...
+            'Color','w', ...
+            'Position',[110 50 1200 800], ...
+            'Name','SPH versus Analytical', ...
+            'NumberTitle','off');
+
+        tiledlayout( ...
+            comparisonFigure, ...
+            2,2, ...
+            'TileSpacing','compact', ...
+            'Padding','compact');
+
+
+        % ------------------------------------------------------
+        % 1. Surface pressure: C++ SPH vs C++ analytical
+        % ------------------------------------------------------
+
+        nexttile;
+
+        plot( ...
+            thetaDegrees, ...
+            pSPH, ...
+            'o-', ...
+            'LineWidth',1.2, ...
+            'MarkerSize',4);
+
+        hold on;
+
+        plot( ...
+            thetaDegrees, ...
+            pExact, ...
+            '--', ...
+            'LineWidth',1.5);
+
+        hold off;
+
+        xlabel('\theta (deg)');
+        ylabel('Surface pressure (Pa)');
+
+        title(sprintf( ...
+            'Surface pressure at t = %.4g s', ...
+            currentTime));
+
+        legend( ...
+            'SPH ', ...
+            'Analytical ', ...
+            'Location','best');
+
+        grid on;
+
+
+        % ------------------------------------------------------
+        % 2. Current CD and CL: C++ SPH vs C++ analytical
+        % ------------------------------------------------------
+
+        nexttile;
+
+        coefficientValues = ...
+            [currentCD CDExact; ...
+             currentCL CLExact];
+
+        bar( ...
+            categorical({'C_D','C_L'}), ...
+            coefficientValues, ...
+            'grouped');
+
+        ylabel('Coefficient');
+
+        title(sprintf( ...
+            'Force coefficients at t = %.4g s', ...
+            forceTime));
+
+        legend( ...
+            'SPH ', ...
+            'Analytical ', ...
+            'Location','best');
+
+        grid on;
+
+
+        % ------------------------------------------------------
+        % 3. CD history with analytical reference from C++
+        % ------------------------------------------------------
+
+        nexttile;
+
+        plot( ...
+            F.t, ...
+            F.CD, ...
+            'LineWidth',1.3);
+
+        hold on;
+
+        yline( ...
+            CDExact, ...
+            '--', ...
+            'LineWidth',1.2);
+
+        xline( ...
+            currentTime, ...
+            ':', ...
+            'LineWidth',1.0);
+
+        hold off;
+
+        xlabel('Time (s)');
+        ylabel('C_D');
+        title('Drag coefficient');
+
+        legend( ...
+            'SPH ', ...
+            'Analytical ', ...
+            'Current viewer time', ...
+            'Location','best');
+
+        grid on;
+
+
+        % ------------------------------------------------------
+        % 4. CL history with analytical reference from C++
+        % ------------------------------------------------------
+
+        nexttile;
+
+        plot( ...
+            F.t, ...
+            F.CL, ...
+            'LineWidth',1.3);
+
+        hold on;
+
+        yline( ...
+            CLExact, ...
+            '--', ...
+            'LineWidth',1.2);
+
+        xline( ...
+            currentTime, ...
+            ':', ...
+            'LineWidth',1.0);
+
+        hold off;
+
+        xlabel('Time (s)');
+        ylabel('C_L');
+        title('Lift coefficient');
+
+        legend( ...
+            'SPH ', ...
+            'Analytical ', ...
+            'Current viewer time', ...
+            'Location','best');
+
+        grid on;
+
+
+        sgtitle(sprintf( ...
+            ['SPH vs Analytical, h/dp = %.2f' ...
+             '   |   comparison at viewer t = %.4g s'], ...
+            hCoefficient, ...
+            currentTime));
+
+
+        fprintf('\nSPH-versus-analytical comparison\n');
+        fprintf('Viewer time = %.16e s\n',currentTime);
+        fprintf('Nearest C++ force time = %.16e s\n',forceTime);
+        fprintf('SPH CD = %.16e\n',currentCD);
+        fprintf('Analytical CD = %.16e\n',CDExact);
+        fprintf('SPH CL = %.16e\n',currentCL);
+        fprintf('Analytical CL = %.16e\n',CLExact);
+        fprintf(['Note: the current SPH case is viscous/no-slip whereas ' ...
+                 'the analytical curve is inviscid potential flow.\n']);
+
+    end
+
+
+
+    function value = readCppSummaryValue(rawData,label,sourceFilename)
+
+        value = NaN;
+
+        for row = 1:size(rawData,1)
+
+            firstCell = rawData{row,1};
+
+            if (ischar(firstCell) || isstring(firstCell)) && ...
+                    strcmpi(strtrim(string(firstCell)),label)
+
+                candidate = rawData{row,2};
+
+                if isnumeric(candidate) && isscalar(candidate)
+                    value = double(candidate);
+                else
+                    value = str2double(string(candidate));
+                end
+
+                return;
+            end
+        end
+
+        error("Could not find C++ summary value '%s' in %s.", ...
+            label,sourceFilename);
+
+    end
+
+
     % Instantaneous streamlines; these are not time-dependent trajectories.
     function updateStreamlines(frame)
         delete(hStreamlines(isgraphics(hStreamlines)));
@@ -1624,44 +2370,7 @@ showFrame(1);
         end
     end
 
-    %% Vorticity from derivatives on the nonuniform polar grid
-    % Uses the boundary ring too. Radial end derivatives are one-sided.
-    % Angular derivatives are periodic; no interpolation across the cylinder.
-    function omega = calculateVorticity(xValues,yValues,uValues,vValues)
-        nt = numel(boundaryRows);
-        nr = numberOfParticles/nt;
-        if nt < 3 || nr ~= round(nr) || nr < 3
-            error("Vorticity requires a complete polar grid with at least three rings.");
-        end
-        X = reshape(xValues,nt,nr);
-        Y = reshape(yValues,nt,nr);
-        U = reshape(uValues,nt,nr);
-        V = reshape(vValues,nt,nr);
-        radius = hypot(X,Y);
-        radii = mean(radius,1);
-        angles = unwrap(atan2(Y(:,1),X(:,1)));
-        angleStep = 2*pi/nt;
-        if any(diff(radii) <= 0) || ...
-                max(abs(radius-radii),[],'all') > 1e-5*max(radii) || ...
-                max(abs(diff(angles)-angleStep)) > 1e-5
-            error("Expected fixed concentric rings with uniformly spaced angles.");
-        end
-        dUdr = zeros(size(U));
-        dVdr = zeros(size(V));
-        for angleIndex = 1:nt
-            dUdr(angleIndex,:) = gradient(U(angleIndex,:),radii);
-            dVdr(angleIndex,:) = gradient(V(angleIndex,:),radii);
-        end
-        dUdTheta = (circshift(U,-1,1)-circshift(U,1,1))/(2*angleStep);
-        dVdTheta = (circshift(V,-1,1)-circshift(V,1,1))/(2*angleStep);
-        cosTheta = X./radius;
-        sinTheta = Y./radius;
-        % d/dx = cos(theta)*d/dr - sin(theta)/r*d/dtheta
-        % d/dy = sin(theta)*d/dr + cos(theta)/r*d/dtheta
-        omegaMesh = cosTheta.*dVdr - sinTheta./radius.*dVdTheta ...
-            - sinTheta.*dUdr - cosTheta./radius.*dUdTheta;
-        omega = omegaMesh(:);
-    end
+    %% Vorticity is supplied directly by the C++ output.
 
     function setFieldColormap
         if plotVariable == "vorticity"
