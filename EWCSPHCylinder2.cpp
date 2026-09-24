@@ -41,16 +41,17 @@ const double velcoefY = 0.0;
 const double inletVelocity = 0.5;  // m/s
 
 const double c0 = 10.0*sqrt(g*(waterheight));
+//const double c0 = 20.0*inletVelocity;
 
 const double gammaEOS = 7.0;
 const double B = c0*c0*rho0/gammaEOS;
 
-const double viscosity = 1.0e-5;
+const double viscosity = 1.0e-4;
 const double tvis = 1.0;
 const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder;
 const double R = 10*Dcylinder;
-const double dr0 = sqrt(20.0*viscosity*tvis);
+const double dr0 = sqrt(2.0*viscosity*tvis);
 //const double dr0 = 0.1*Dcylinder;
 //double drhodtexact = -100;
 const double alphaAV = 0.01;
@@ -907,6 +908,7 @@ void validatePotentialFlowForce(
 
     double CL =
         Fy/forceReference;
+
 
     file << endl;
 
