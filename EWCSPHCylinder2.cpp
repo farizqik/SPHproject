@@ -38,7 +38,7 @@ const double rho0 = 1000.0;
 const double velcoefX = 0.1;
 const double velcoefY = 0.0;
 
-const double inletVelocity = 0.5;  // m/s
+const double inletVelocity = 0.1;  // m/s
 
 const double c0 = 10.0*sqrt(g*(waterheight));
 //const double c0 = 20.0*inletVelocity;
@@ -474,6 +474,27 @@ double radialSum(double qA, int N)
     }
 
     return (pow(qA, N) - 1.0) / (qA - 1.0);
+}
+
+
+
+// --------------------------------------------------
+// Stationary free-slip cylinder: u_n = 0 and du_t/dn ~ 0.
+// The boundary point and the first fluid point share the same angle.
+
+
+void applyCylinderFreeSlip(
+    int i, int NTheta,
+    const vector<double>& theta,
+    vector<double>& u,
+    vector<double>& v)
+{
+    const int j = i + NTheta;
+    const double tx = -sin(theta[i]);
+    const double ty =  cos(theta[i]);
+    const double ut = u[j]*tx + v[j]*ty;
+    u[i] = ut*tx;
+    v[i] = ut*ty;
 }
 
 
@@ -1310,7 +1331,32 @@ int main()
 // Intial conditions
 // 
 // --------------------------------------------------
-        for (int i = 0; i < Nparticles; i++)
+        //Slip Initial Conditions
+        for (int i = 0; i < Nparticles; ++i)
+        {
+            double ri = r[i];
+            double ct = cos(theta[i]);
+            double st = sin(theta[i]);
+            double a2_over_r2 = (r0*r0)/(ri*ri);
+
+            double ur = inletVelocity*(1.0 - a2_over_r2)*ct;
+            double ut = -inletVelocity*(1.0 + a2_over_r2)*st;
+
+            u[i] = ur*ct - ut*st;
+            v[i] = ur*st + ut*ct;
+
+            double pInitial = 0.5*rho0*
+                (inletVelocity*inletVelocity - u[i]*u[i] - v[i]*v[i]);
+
+            rho[i] = rho0*pow(1.0 + pInitial/B, 1.0/gammaEOS);
+
+            drhodtexact[i] = -rho[i]*velcoefX;
+
+            pressureexact[i] = pInitial;
+        }
+
+        //No-slip Initial Conditions
+        /*for (int i = 0; i < Nparticles; i++)
         {
             rho[i] = rho0;
 
@@ -1332,7 +1378,9 @@ int main()
 
             pressureexact[i] =
                 rho0*g*(waterheight-y[i]);
-        }
+        }*/
+
+
 
         for (int i = 0; i < Nboundary; ++i)
         {
@@ -1348,6 +1396,12 @@ int main()
             xghost[i] = x[i] + dg*nx;
             yghost[i] = y[i] + dg*ny;
         }
+
+        for (int i = 0; i < Nboundary; ++i)
+        {
+            applyCylinderFreeSlip(i, NTheta, theta, u, v);
+        }
+            
 
 
 
@@ -1670,9 +1724,11 @@ int main()
 
                 rho[i] = rhoBoundary;
 
+                applyCylinderFreeSlip(i, NTheta, theta, u, v);
+
                 // Stationary no-slip cylinder
-                u[i] = 0.0;
-                v[i] = 0.0;
+                //u[i] = 0.0;
+                //v[i] = 0.0;
             }
 
             applyRiemannBufferBoundary(
@@ -1741,14 +1797,14 @@ int main()
                     + v[j]*ty;
 
                 // Stationary cylinder: ut_wall = 0
-                double tauWall =
+                /*double tauWall =
                     mu*utFluid/dr;
 
                 FxViscous +=
                     tauWall*tx*ds;
 
                 FyViscous +=
-                    tauWall*ty*ds;
+                    tauWall*ty*ds;*/
             }
 
             double Fx = FxPressure + FxViscous;
@@ -1929,14 +1985,14 @@ int main()
             double L2drhodt = 0.0;
             double L2pressure = 0.0;           
 
-            /*for (int i = Nboundary; i < NfluidEnd; i++)
+            for (int i = Nboundary; i < NfluidEnd; i++)
             {
-                double errordrhodt = (drhodt[i]-drhodtexact[i])*(drhodt[i]-drhodtexact[i]);
+                //double errordrhodt = (drhodt[i]-drhodtexact[i])*(drhodt[i]-drhodtexact[i]);
                 double errorpressure = (pressure[i]-pressureexact[i])*(pressure[i]-pressureexact[i]);
                 
-                L2drhodt += errordrhodt;
+                //L2drhodt += errordrhodt;
                 L2pressure += errorpressure;
-            }*/
+            }
  
             double L2normdrhodt = sqrt(L2drhodt/(Nfluid));
             double L2normpressure = sqrt(L2pressure/Nfluid);
@@ -2042,8 +2098,11 @@ int main()
 
                 rhohalf[i] = rhoBoundary;
 
-                uhalf[i] = 0.0;
-                vhalf[i] = 0.0;
+                applyCylinderFreeSlip(i, NTheta, theta, uhalf, vhalf);
+
+                // No-slip Cylinder
+                //uhalf[i] = 0.0;
+                //vhalf[i] = 0.0;
             }
 
             applyRiemannBufferBoundary(
@@ -2149,8 +2208,11 @@ int main()
 
                 rhohalf[i] = rhoBoundary;
 
-                uhalf[i] = 0.0;
-                vhalf[i] = 0.0;
+                applyCylinderFreeSlip(i, NTheta, theta, uhalf, vhalf);
+
+                // No-slip Cylinder
+                //uhalf[i] = 0.0;
+                //vhalf[i] = 0.0;
             }
 
             applyRiemannBufferBoundary(
@@ -2189,8 +2251,12 @@ int main()
 // For Boundary
             for (int i = 0; i < Nboundary; i++)
             {
-                unew[i] = 0.0;
-                vnew[i] = 0.0;
+                
+                // No-slip Cylinder
+                //unew[i] = 0.0;
+                //vnew[i] = 0.0;
+
+                applyCylinderFreeSlip(i, NTheta, theta, unew, vnew);
                 xnew[i] = xhalf[i];
                 ynew[i] = yhalf[i];
 
@@ -2253,10 +2319,7 @@ int main()
                 
             }                
                    
-            
-
-
-
+ 
         t += dt;
         n++;
         
@@ -2265,10 +2328,7 @@ int main()
         forceFile.close();
 
 
-
     }
-
-    
     
 
     auto end = std::chrono::high_resolution_clock::now();
