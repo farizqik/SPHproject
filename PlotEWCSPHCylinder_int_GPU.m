@@ -1,45 +1,82 @@
-function PlotEWCSPHCylinder_int_GPU_4L2
+function PlotEWCSPHRadialFlexible(simulationFolder)
 %% =========================================================
-% USER SETTINGS
+% DATASET SELECTION
 % ==========================================================
-simulationFolder = ...
-    "EWCSPHCylinder_dr0_0.014142_Nr_30_Ntheta_22_Rr0_20.000000";
-% Choose ONE h/dp case written by the C++ code:
-hCoefficient = 2;
-% Ferrand non-orthogonal square reference state used for L2 errors.
-referenceDensity = 1000.0;       % rho0 (kg/m^3)
-referenceSpeed = 0.1;            % |u0| (m/s)
-referenceUx = referenceSpeed/sqrt(2.0);
-referenceUy = referenceSpeed/sqrt(2.0);
-% Match these values to the C++ simulation (Re = U*D/nu).
-inletVelocity = 0.1;         % m/s
-cylinderDiameter = 0.1;     % m
-kinematicViscosity = 1.0e-4; % m^2/s
-reynoldsNumber = inletVelocity*cylinderDiameter/kinematicViscosity;
-% Initial displayed variable:
+% MATLAB does not duplicate simulation parameters. All physical, numerical,
+% geometry, case, and reference-state values are read from the C++ file
+% SimulationConstants.csv.  If no folder is supplied, select one interactively.
+
+if nargin < 1 || strlength(string(simulationFolder)) == 0
+    selectedFolder = uigetdir(pwd,'Select EWCSPH simulation output folder');
+    if isequal(selectedFolder,0)
+        return;
+    end
+    simulationFolder = string(selectedFolder);
+else
+    simulationFolder = string(simulationFolder);
+end
+
+constantsFilename = fullfile(simulationFolder,'SimulationConstants.csv');
+if ~isfile(constantsFilename)
+    error(['SimulationConstants.csv was not found in:\n%s\n\n' ...
+           'Run the metadata-enabled C++ solver first.'],simulationFolder);
+end
+
+constantCells = readcell(constantsFilename,'Delimiter',',');
+if size(constantCells,2) < 2 || size(constantCells,1) < 2
+    error('Invalid SimulationConstants.csv format in %s.',constantsFilename);
+end
+constantNames = strtrim(string(constantCells(2:end,1)));
+constantValues = string(constantCells(2:end,2));
+
+% Simulation/reference values: ALL read from C++ metadata.
+referenceDensity = constantNumber('rho0');
+referenceSpeed = constantNumber('inletVelocity');
+referenceUx = constantNumber('inletVelocityX');
+referenceUy = constantNumber('inletVelocityY');
+flowAngleDeg = constantNumber('flowAngleDeg');
+inletVelocity = referenceSpeed;
+cylinderDiameter = constantNumber('Dcylinder');
+kinematicViscosity = constantNumber('viscosity');
+reynoldsNumber = constantNumber('Reynolds');
+nTheta = round(constantNumber('NTheta'));
+metadataNboundary = round(constantNumber('Nboundary'));
+metadataNfluid = round(constantNumber('Nfluid'));
+metadataNparticles = round(constantNumber('Nparticles'));
+metadataHasCylinder = logical(round(constantNumber('hasCylinder')));
+kernelName = constantText('kernel');
+
+if nTheta < 1 || ~isfinite(nTheta)
+    error('Invalid NTheta in SimulationConstants.csv.');
+end
+
+fprintf('\nLoaded C++ metadata from:\n%s\n',constantsFilename);
+fprintf('Kernel: %s | NTheta: %d | flow angle: %.6g deg\n', ...
+    kernelName,nTheta,flowAngleDeg);
+
+%% =========================================================
+% VISUALISATION / POST-PROCESSING SETTINGS ONLY
+% ==========================================================
+% These settings change only how already-computed C++ results are displayed.
 plotVariable = "vorticity";
 manualColorLimits = [];
-% Global limits over all fluid particles and all frames.
 colorPercentiles = [5 95];
 playbackFPS = 20;
-% Saved MP4 settings.
 videoFPS = 20;
 videoQuality = 95;
 showStreamlines = false;
 streamGridSize = 220;
 streamSeedCount = 25;
-% Velocity arrows over the continuous field.
 showVelocityArrows = false;
-arrowStride = 3;              % Increase to show fewer arrows
-arrowScale = 1.5;             % MATLAB automatic arrow-length scaling
+arrowStride = 3;
+arrowScale = 1.5;
 arrowColor = [0 0 0];
+useGPU = true;
+maximumGPUMemoryFraction = 0.60;
+
 if arrowStride < 1 || arrowStride ~= round(arrowStride)
     error("arrowStride must be a positive integer.");
 end
-% GPU is used only to cache/display the C++ output.
-% No SPH quantity is recomputed on the GPU.
-useGPU = true;
-maximumGPUMemoryFraction = 0.60;
 %% =========================================================
 % FIND C++ TIMESTEP FILES
 % ==========================================================
@@ -66,16 +103,24 @@ for k = 1:numel(allFiles)
     allH(k) = str2double(token{1});
     allTime(k) = str2double(token{2});
 end
-%% Keep only the requested h/dp
+%% Select h/dp from C++ output (no hard-coded MATLAB simulation setting)
+availableH = unique(allH(isfinite(allH)));
+if isempty(availableH)
+    error("No valid h/dp values were found in the C++ timestep filenames.");
+elseif numel(availableH) == 1
+    hCoefficient = availableH(1);
+else
+    [selectionIndex,confirmed] = listdlg( ...
+        'PromptString','Select C++ h/dp result to visualise:', ...
+        'SelectionMode','single', ...
+        'ListString',cellstr(compose('%.12g',availableH)));
+    if ~confirmed
+        return;
+    end
+    hCoefficient = availableH(selectionIndex);
+end
 hTolerance = 1e-10*max(1,abs(hCoefficient));
 selected = abs(allH-hCoefficient) <= hTolerance;
-if ~any(selected)
-    availableH = unique(allH);
-    error( ...
-        "No files found for h/dp = %.6g.\nAvailable h/dp values: %s", ...
-        hCoefficient, ...
-        strjoin(string(availableH.'),", "));
-end
 files = allFiles(selected);
 time = allTime(selected);
 [time,order] = sort(time);
@@ -192,6 +237,23 @@ boundaryRows = find(boundary);
 fluidRows = find(fluid);
 bufferRows = find(buffer);
 numberOfParticles = height(T0);
+
+% Case identity comes from the C++ metadata; cross-check against CSV Type.
+hasCylinder = metadataHasCylinder;
+if hasCylinder ~= ~isempty(boundaryRows)
+    error(['C++ metadata/particle-type mismatch: hasCylinder=%d but the ' ...
+           'timestep CSV contains %d boundary particles.'], ...
+           hasCylinder,numel(boundaryRows));
+end
+if metadataNboundary ~= numel(boundaryRows)
+    error('Nboundary in SimulationConstants.csv does not match the timestep CSV.');
+end
+if metadataNfluid ~= numel(fluidRows)
+    error('Nfluid in SimulationConstants.csv does not match the timestep CSV.');
+end
+if metadataNparticles ~= numberOfParticles
+    error('Nparticles in SimulationConstants.csv does not match the timestep CSV.');
+end
 if any(~(boundary | fluid | buffer))
     error("Invalid particle Type in the first frame.");
 end
@@ -406,13 +468,21 @@ hold(ax,'on');
 %% Continuous field on the existing polar grid
 % C++ orders each ring by angle, with NTheta points per ring.
 % Closing the angular seam does not add new simulation values.
-nTheta = numel(boundaryRows);
-nRings = numel(fluidRows)/nTheta;
-if nTheta < 3 || nRings < 2 || nRings ~= round(nRings)
-    error("Expected at least two complete fluid rings on the polar grid.");
+% NTheta is supplied by the C++ metadata.
+if ~isscalar(nTheta) || ~isfinite(nTheta) || nTheta < 3 || nTheta ~= round(nTheta)
+    error("Invalid NTheta in SimulationConstants.csv: %g",nTheta);
 end
-surfaceRows = reshape(fluidRows,nTheta,nRings);
-surfaceRows = [surfaceRows; surfaceRows(1,:)];
+
+nRings = numel(fluidRows)/nTheta;
+if nRings < 2 || nRings ~= round(nRings)
+    error(["The physical-fluid count (%d) is not an integer number of rings " ...
+           "for NTheta = %d. Check the C++ particle counts and SimulationConstants.csv."], ...
+           numel(fluidRows),nTheta);
+end
+
+baseSurfaceRows = reshape(fluidRows,nTheta,nRings);
+firstFluidRingRows = baseSurfaceRows(:,1);
+surfaceRows = [baseSurfaceRows; baseSurfaceRows(1,:)];
 meshX = firstFrame(surfaceRows(:),1);
 meshY = firstFrame(surfaceRows(:),2);
 meshC = firstFrame(surfaceRows(:),fieldColumn);
@@ -424,11 +494,18 @@ hFluid = surf(ax, ...
     reshape(meshC,meshSize), ...
     'FaceColor','interp', 'EdgeColor','none');
 view(ax,2);
-%% Cylinder boundary
+%% Optional cylinder boundary
+if hasCylinder
+    boundaryX = firstFrame(boundary,1);
+    boundaryY = firstFrame(boundary,2);
+else
+    boundaryX = NaN;
+    boundaryY = NaN;
+end
 hBoundary = scatter( ...
     ax, ...
-    firstFrame(boundary,1), ...
-    firstFrame(boundary,2), ...
+    boundaryX, ...
+    boundaryY, ...
     42, ...
     [0 0 0], ...
     'filled');
@@ -473,13 +550,27 @@ hVelocity.HitTest = 'off';
 hVelocity.PickableParts = 'none';
 % Streamlines use instantaneous velocities on the fixed polar grid.
 hStreamlines = gobjects(0);
-streamCenter = [mean(firstFrame(boundary,1)),mean(firstFrame(boundary,2))];
+if hasCylinder
+    streamCenter = [mean(firstFrame(boundary,1)),mean(firstFrame(boundary,2))];
+else
+    % The first physical ring is circular even when it is fluid.  Its mean
+    % gives the polar-grid centre without requiring a boundary particle set.
+    streamCenter = [mean(firstFrame(firstFluidRingRows,1)), ...
+                    mean(firstFrame(firstFluidRingRows,2))];
+end
+
 radius = hypot(firstFrame(:,1)-streamCenter(1),firstFrame(:,2)-streamCenter(2));
-wallRadius = mean(radius(boundary));
+if hasCylinder
+    innerRadius = mean(radius(boundary));
+else
+    innerRadius = min(radius(fluid));
+end
+wallRadius = innerRadius; % retained name for nested streamline code
 outerRadius = max(radius);
 streamRadii = mean(reshape(radius,nTheta,[]),1);
-angles = mod(atan2(firstFrame(1:nTheta,2)-streamCenter(2), ...
-                  firstFrame(1:nTheta,1)-streamCenter(1)),2*pi);
+angleRingRows = 1:nTheta;
+angles = mod(atan2(firstFrame(angleRingRows,2)-streamCenter(2), ...
+                  firstFrame(angleRingRows,1)-streamCenter(1)),2*pi);
 [angles,angleOrder] = sort(angles);
 angles = [angles(end)-2*pi; angles; angles(1)+2*pi];
 [streamX,streamY] = meshgrid( ...
@@ -487,14 +578,29 @@ angles = [angles(end)-2*pi; angles; angles(1)+2*pi];
     linspace(streamCenter(2)-outerRadius,streamCenter(2)+outerRadius,streamGridSize));
 queryR = hypot(streamX-streamCenter(1),streamY-streamCenter(2));
 queryTheta = mod(atan2(streamY-streamCenter(2),streamX-streamCenter(1)),2*pi);
-streamMask = queryR <= wallRadius | queryR >= outerRadius;
-seedRelativeY = linspace(-0.85*outerRadius,0.85*outerRadius,streamSeedCount);
-seedX = streamCenter(1)-sqrt((0.95*outerRadius)^2-seedRelativeY.^2);
-seedY = streamCenter(2)+seedRelativeY;
-wakeX = linspace(1.5*wallRadius,0.6*outerRadius,5);
-seedX = [seedX,streamCenter(1)+wakeX,streamCenter(1)+wakeX];
-seedY = [seedY,streamCenter(2)+0.5*wallRadius*ones(1,5), ...
-               streamCenter(2)-0.5*wallRadius*ones(1,5)];
+streamMask = queryR <= innerRadius | queryR >= outerRadius;
+
+% Put the main streamline seeds on the upstream side for ANY inlet angle.
+flowUnit = [cosd(flowAngleDeg), sind(flowAngleDeg)];
+normalUnit = [-flowUnit(2), flowUnit(1)];
+seedCross = linspace(-0.85*outerRadius,0.85*outerRadius,streamSeedCount);
+upstreamDistance = 0.95*outerRadius;
+seedX = streamCenter(1) - upstreamDistance*flowUnit(1) + seedCross*normalUnit(1);
+seedY = streamCenter(2) - upstreamDistance*flowUnit(2) + seedCross*normalUnit(2);
+
+% Extra wake seeds are meaningful only when a physical cylinder exists.
+if hasCylinder
+    wakeDistance = linspace(1.5*innerRadius,0.6*outerRadius,5);
+    wakeOffset = 0.5*innerRadius;
+    wakeCenterX = streamCenter(1) + wakeDistance*flowUnit(1);
+    wakeCenterY = streamCenter(2) + wakeDistance*flowUnit(2);
+    seedX = [seedX, ...
+             wakeCenterX + wakeOffset*normalUnit(1), ...
+             wakeCenterX - wakeOffset*normalUnit(1)];
+    seedY = [seedY, ...
+             wakeCenterY + wakeOffset*normalUnit(2), ...
+             wakeCenterY - wakeOffset*normalUnit(2)];
+end
 axis(ax,'equal');
 xlim(ax,xLimits);
 ylim(ax,yLimits);
@@ -753,6 +859,11 @@ nextButton.Callback = @(~,~)stepFrame(1);
 lastButton.Callback = @(~,~)showFrame(numberOfFrames);
 historyButton.Callback = @showSelectedHistory;
 comparisonButton.Callback = @showCombinedComparison;
+if ~hasCylinder
+    comparisonButton.Enable = 'off';
+    comparisonButton.TooltipString = ...
+        'Cylinder analytical comparison is disabled because this dataset has no cylinder boundary.';
+end
 saveVideoButton.Callback = @saveAnimation;
 parameterMenu.Callback = @parameterChanged;
 frameSlider.Callback = @sliderMoved;
@@ -896,23 +1007,33 @@ showFrame(1);
             'VData',arrowV);
         updateStreamlines(frame);
         %% Boundary positions
-        set( ...
-            hBoundary, ...
-            'XData',frame(boundary,1), ...
-            'YData',frame(boundary,2));
-        %% C++ frame summary
-        L2pressure = ...
-            summaryValues(requestedIndex,1);
-        KE = ...
-            summaryValues(requestedIndex,2);
-        titleHandle.String = sprintf( ...
-            ['EWCSPH Cylinder, Re = %.0f, h/dp = %.2f, t = %.3f s' ...
-             '   |   KE = %.4g   |   L_2(P) = %.4g'], ...
-            reynoldsNumber, ...
-            hCoefficient, ...
-            time(requestedIndex), ...
-            KE, ...
-            L2pressure);
+        if hasCylinder
+            set( ...
+                hBoundary, ...
+                'XData',frame(boundary,1), ...
+                'YData',frame(boundary,2));
+        else
+            set(hBoundary,'XData',NaN,'YData',NaN);
+        end
+
+        %% Case-aware title
+        currentL2rho = l2DensityHistory(requestedIndex);
+        currentL2vel = l2VelocityHistory(requestedIndex);
+        if hasCylinder
+            titleHandle.String = sprintf( ...
+                ['EWCSPH radial grid with cylinder, Re_D = %.0f, ' ...
+                 'h/dp = %.2f, t = %.3f s, angle = %.1f deg' ...
+                 '   |   L_2(rho) = %.3g   |   L_2(u) = %.3g'], ...
+                reynoldsNumber,hCoefficient,time(requestedIndex),flowAngleDeg, ...
+                currentL2rho,currentL2vel);
+        else
+            titleHandle.String = sprintf( ...
+                ['EWCSPH radial grid without cylinder, h/dp = %.2f, ' ...
+                 't = %.3f s, angle = %.1f deg' ...
+                 '   |   L_2(rho) = %.3g   |   L_2(u) = %.3g'], ...
+                hCoefficient,time(requestedIndex),flowAngleDeg, ...
+                currentL2rho,currentL2vel);
+        end
         frameSlider.Value = ...
             requestedIndex;
         frameLabel.String = sprintf( ...
@@ -1144,10 +1265,13 @@ showFrame(1);
         yClick = point(1,2);
         % Select only from the physical particle set represented by the
         % clicked graphics object.
-        if isequal(source,hBoundary)
+        if isequal(source,hBoundary) && hasCylinder
             candidateRows = boundaryRows;
         else
             candidateRows = fluidRows;
+        end
+        if isempty(candidateRows)
+            return;
         end
         dx = frame(candidateRows,1) - xClick;
         dy = frame(candidateRows,2) - yClick;
@@ -1313,6 +1437,11 @@ showFrame(1);
     %   PotentialFlowValidation.csv written by C++.
     % ----------------------------------------------------------
     function showCombinedComparison(~,~)
+        if ~hasCylinder
+            msgbox('Cylinder analytical comparison is unavailable for a no-cylinder case.', ...
+                   'Comparison unavailable');
+            return;
+        end
         stopPlayback;
         currentState = guidata(fig);
         currentFrameIndex = currentState.index;
@@ -1600,6 +1729,31 @@ showFrame(1);
         else
             colormap(ax,turbo);
         end
+    end
+
+    %% ---------------------------------------------------------
+    % Read a numeric C++ constant from SimulationConstants.csv
+    % ----------------------------------------------------------
+    function value = constantNumber(name)
+        idx = find(strcmpi(constantNames,string(name)),1);
+        if isempty(idx)
+            error("Required C++ constant '%s' is missing from %s.",name,constantsFilename);
+        end
+        value = str2double(constantValues(idx));
+        if ~isscalar(value) || isnan(value)
+            error("C++ constant '%s' is not numeric in %s.",name,constantsFilename);
+        end
+    end
+
+    %% ---------------------------------------------------------
+    % Read a text C++ constant from SimulationConstants.csv
+    % ----------------------------------------------------------
+    function value = constantText(name)
+        idx = find(strcmpi(constantNames,string(name)),1);
+        if isempty(idx)
+            error("Required C++ constant '%s' is missing from %s.",name,constantsFilename);
+        end
+        value = strtrim(constantValues(idx));
     end
     %% ---------------------------------------------------------
     % Clean close
