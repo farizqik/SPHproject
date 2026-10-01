@@ -51,8 +51,8 @@ const double tvis = 1.0;
 const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder;
 const double R = 10*Dcylinder;
-const double dr0 = sqrt(2.0*viscosity*tvis);
-//const double dr0 = 0.1*Dcylinder;
+//const double dr0 = sqrt(2.0*viscosity*tvis);
+const double dr0 = Dcylinder/10.0;
 //double drhodtexact = -100;
 const double alphaAV = 0.01;
 const double deltadifussion = 0.1;
@@ -61,8 +61,7 @@ const int Nr = 30;
 const int Nbuffer = 8;      // open-boundary buffer rings
 int NrTotal = Nr + Nbuffer;
 
-double Reynolds =
-    inletVelocity*Dcylinder/viscosity;
+//double Reynolds = inletVelocity*Dcylinder/viscosity;
 
 
 
@@ -496,6 +495,36 @@ void applyCylinderFreeSlip(
     u[i] = ut*tx;
     v[i] = ut*ty;
 }
+
+
+
+/*void applyCylinderFreeSlip(
+    int i, int NTheta,
+    const vector<double>& theta,
+    vector<double>& u,
+    vector<double>& v)
+{
+    const double th = theta[i];
+
+    const double nx = cos(th);
+    const double ny = sin(th);
+
+    const double tx = -sin(th);
+    const double ty =  cos(th);
+
+    const double un = 0.0;
+
+    const double ut =
+        -2.0*inletVelocity*sin(th);
+
+    u[i] =
+        un*nx
+        + ut*tx;
+
+    v[i] =
+        un*ny
+        + ut*ty;
+}*/
 
 
 // --------------------------------------------------
@@ -1337,10 +1366,10 @@ int main()
             double ri = r[i];
             double ct = cos(theta[i]);
             double st = sin(theta[i]);
-            double a2_over_r2 = (r0*r0)/(ri*ri);
+            double a2r2 = (r0*r0)/(ri*ri);
 
-            double ur = inletVelocity*(1.0 - a2_over_r2)*ct;
-            double ut = -inletVelocity*(1.0 + a2_over_r2)*st;
+            double ur = inletVelocity*(1.0 - a2r2)*ct;
+            double ut = -inletVelocity*(1.0 + a2r2)*st;
 
             u[i] = ur*ct - ut*st;
             v[i] = ur*st + ut*ct;
@@ -1967,9 +1996,50 @@ int main()
 
                 if (dt < dtMin)
                 {
-                    cout << "Timestep became too small"
-                        << "  t = " << t
-                        << "  dt = " << dt
+                    int worst = -1;
+                    double maxAcc = 0.0;
+
+                    for (int i = Nboundary;
+                        i < NfluidEnd;
+                        ++i)
+                    {
+                        double acc =
+                            sqrt(
+                                dudt[i]*dudt[i]
+                                + dvdt[i]*dvdt[i]
+                            );
+
+                        if (acc > maxAcc)
+                        {
+                            maxAcc = acc;
+                            worst = i;
+                        }
+                    }
+
+                    cout << scientific;
+
+                    cout
+                        << "\nTimestep collapse\n"
+                        << "t = " << t << "\n"
+                        << "dt = " << dt << "\n"
+                        << "worst particle = "
+                        << worst << "\n"
+                        << "r = " << r[worst] << "\n"
+                        << "theta = "
+                        << theta[worst] << "\n"
+                        << "x = " << x[worst] << "\n"
+                        << "y = " << y[worst] << "\n"
+                        << "u = " << u[worst] << "\n"
+                        << "v = " << v[worst] << "\n"
+                        << "rho = " << rho[worst] << "\n"
+                        << "p = "
+                        << pressure[worst] << "\n"
+                        << "dudt = "
+                        << dudt[worst] << "\n"
+                        << "dvdt = "
+                        << dvdt[worst] << "\n"
+                        << "|a| = "
+                        << maxAcc
                         << endl;
 
                     return 1;

@@ -1,40 +1,33 @@
-function PlotEWCSPHCylinder_Streamlines_GPU
-
-
+function PlotEWCSPHCylinder_int_GPU_4L2
 %% =========================================================
 % USER SETTINGS
 % ==========================================================
-
 simulationFolder = ...
     "EWCSPHCylinder_dr0_0.014142_Nr_30_Ntheta_22_Rr0_20.000000";
-
 % Choose ONE h/dp case written by the C++ code:
 hCoefficient = 2;
-
+% Ferrand non-orthogonal square reference state used for L2 errors.
+referenceDensity = 1000.0;       % rho0 (kg/m^3)
+referenceSpeed = 0.1;            % |u0| (m/s)
+referenceUx = referenceSpeed/sqrt(2.0);
+referenceUy = referenceSpeed/sqrt(2.0);
 % Match these values to the C++ simulation (Re = U*D/nu).
 inletVelocity = 0.1;         % m/s
 cylinderDiameter = 0.1;     % m
 kinematicViscosity = 1.0e-4; % m^2/s
 reynoldsNumber = inletVelocity*cylinderDiameter/kinematicViscosity;
-
 % Initial displayed variable:
 plotVariable = "vorticity";
-
 manualColorLimits = [];
-
 % Global limits over all fluid particles and all frames.
 colorPercentiles = [5 95];
-
 playbackFPS = 20;
-
 % Saved MP4 settings.
 videoFPS = 20;
 videoQuality = 95;
-
 showStreamlines = false;
 streamGridSize = 220;
 streamSeedCount = 25;
-
 % Velocity arrows over the continuous field.
 showVelocityArrows = false;
 arrowStride = 3;              % Increase to show fewer arrows
@@ -43,83 +36,54 @@ arrowColor = [0 0 0];
 if arrowStride < 1 || arrowStride ~= round(arrowStride)
     error("arrowStride must be a positive integer.");
 end
-
 % GPU is used only to cache/display the C++ output.
 % No SPH quantity is recomputed on the GPU.
 useGPU = true;
 maximumGPUMemoryFraction = 0.60;
-
-
 %% =========================================================
 % FIND C++ TIMESTEP FILES
 % ==========================================================
-
 allFiles = dir(fullfile( ...
     simulationFolder, ...
     "EWCSPH_hdp_*_t_*.csv"));
-
 if isempty(allFiles)
     error("No EWCSPH timestep CSV files found in:\n%s",simulationFolder);
 end
-
-
 %% Parse h/dp and time from every filename
-
 allH = nan(numel(allFiles),1);
 allTime = nan(numel(allFiles),1);
-
 numberPattern = ...
     '[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?';
-
 for k = 1:numel(allFiles)
-
     token = regexp( ...
         allFiles(k).name, ...
         ['_hdp_(' numberPattern ')_t_(' numberPattern ')\.csv$'], ...
         'tokens', ...
         'once');
-
     if isempty(token)
         error("Could not read h/dp and time from %s",allFiles(k).name);
     end
-
     allH(k) = str2double(token{1});
     allTime(k) = str2double(token{2});
-
 end
-
-
 %% Keep only the requested h/dp
-
 hTolerance = 1e-10*max(1,abs(hCoefficient));
-
 selected = abs(allH-hCoefficient) <= hTolerance;
-
 if ~any(selected)
-
     availableH = unique(allH);
-
     error( ...
         "No files found for h/dp = %.6g.\nAvailable h/dp values: %s", ...
         hCoefficient, ...
         strjoin(string(availableH.'),", "));
-
 end
-
 files = allFiles(selected);
 time = allTime(selected);
-
 [time,order] = sort(time);
 files = files(order);
-
 numberOfFrames = numel(files);
-
 fprintf("\nSelected h/dp = %.6g\n",hCoefficient);
 fprintf("Found %d timestep files.\n",numberOfFrames);
-
 firstFilename = fullfile(files(1).folder,files(1).name);
-
-
 %% =========================================================
 % EXACT C++ CSV FORMAT
 % ==========================================================
@@ -131,12 +95,9 @@ firstFilename = fullfile(files(1).folder,files(1).name);
 % Line 5 : time
 % Line 6 : particle header
 % Line 7+: particle data
-
 opts = delimitedTextImportOptions("NumVariables",16);
-
 opts.DataLines = [7 Inf];
 opts.Delimiter = ",";
-
 opts.VariableNames = ...
     ["ID", ...
      "x", ...
@@ -154,7 +115,6 @@ opts.VariableNames = ...
      "dvdt", ...
      "vorticity", ...
      "Type"];
-
 opts.VariableTypes = ...
     ["double", ...
      "double", ...
@@ -172,16 +132,12 @@ opts.VariableTypes = ...
      "double", ...
      "double", ...
      "string"];
-
-
 %% =========================================================
 % PARAMETERS AVAILABLE IN VIEWER
 % ==========================================================
-
 % x and y are stored too, but are not colour-field choices.
 % All numerical fields below are read directly from the C++ output.
 % MATLAB only displays/interpolates them for visualisation.
-
 cacheNames = ...
     ["x", ...
      "y", ...
@@ -194,9 +150,7 @@ cacheNames = ...
      "dudt", ...
      "dvdt", ...
      "vorticity"];
-
 allowedVariables = cacheNames(3:end);
-
 parameterLabels = ...
     ["Density", ...
      "Density rate", ...
@@ -207,7 +161,6 @@ parameterLabels = ...
      "x acceleration", ...
      "y acceleration", ...
      "Vorticity"];
-
 colorLabels = ...
     ["Density (kg/m^3)", ...
      "Density rate (kg/m^3/s)", ...
@@ -218,181 +171,123 @@ colorLabels = ...
      "du/dt (m/s^2)", ...
      "dv/dt (m/s^2)", ...
      "Vorticity (s^{-1})"];
-
-
 if ~any(plotVariable == allowedVariables)
-
     error( ...
         "plotVariable must be one of: %s", ...
         strjoin(allowedVariables,", "));
-
 end
-
 fieldColumn = find(cacheNames == plotVariable,1);
-
 initialVariableIndex = ...
     find(allowedVariables == plotVariable,1);
-
-
 %% =========================================================
 % READ FIRST FRAME
 % ==========================================================
-
 T0 = readtable(firstFilename,opts);
-
 ID0 = T0.ID;
-
 type0 = lower(strtrim(string(T0.Type)));
-
 boundary = type0 == "boundary";
 fluid = type0 == "fluid";
 buffer = type0 == "buffer";
-
 boundaryRows = find(boundary);
 fluidRows = find(fluid);
 bufferRows = find(buffer);
-
 numberOfParticles = height(T0);
-
-
 if any(~(boundary | fluid | buffer))
     error("Invalid particle Type in the first frame.");
 end
-
-
 if ~isequal(ID0,(0:numberOfParticles-1)')
     error("Particle IDs are not sequential from 0 to N-1.");
 end
-
-
 %% =========================================================
 % INITIALISE GPU / CPU CACHE
 % ==========================================================
-
 gpuEnabled = false;
 gpuInfo = [];
-
 numberOfCachedFields = numel(cacheNames);
-
 cacheBytes = ...
     double(numberOfParticles) * ...
     double(numberOfCachedFields) * ...
     double(numberOfFrames) * 8;
-
-
 if useGPU
-
     try
-
         gpuInfo = gpuDevice;
         gpuEnabled = true;
-
     catch gpuError
-
         warning( ...
             "GPU unavailable; using CPU memory instead.\n%s", ...
             gpuError.message);
-
     end
-
 end
-
-
 if gpuEnabled && ...
         cacheBytes > maximumGPUMemoryFraction*double(gpuInfo.AvailableMemory)
-
     warning( ...
         ['The frame cache needs %.2f GiB and exceeds the selected ' ...
          '%.0f%% GPU-memory limit. Using CPU memory instead.'], ...
         cacheBytes/1024^3, ...
         100*maximumGPUMemoryFraction);
-
     gpuEnabled = false;
-
 end
-
-
 if gpuEnabled
-
     frameGPU = gpuArray.zeros( ...
         numberOfParticles, ...
         numberOfCachedFields, ...
         numberOfFrames, ...
         'double');
-
     frameCPU = [];
-
     fprintf( ...
         "GPU cache enabled on %s (%.3f GiB).\n", ...
         gpuInfo.Name, ...
         cacheBytes/1024^3);
-
 else
-
     frameCPU = zeros( ...
         numberOfParticles, ...
         numberOfCachedFields, ...
         numberOfFrames, ...
         'double');
-
     frameGPU = [];
-
     fprintf( ...
         "CPU cache enabled (%.3f GiB).\n", ...
         cacheBytes/1024^3);
-
 end
-
-
 %% =========================================================
 % LOAD ALL FRAMES
 % ==========================================================
-
-% C++ line 3 contains:
-% L2norm Pressure, KE, dr0, reported particle count
+% C++ line 2 contains the summary labels.
+% C++ line 3 contains the corresponding summary values.
+% For the Ferrand square test, use for example:
+% L2rho, L2velocity, KE, Nfluid
+% The viewer detects all summary columns containing "L2" automatically.
 summaryValues = nan(numberOfFrames,4);
-
+% Four L2 histories for the Ferrand square verification:
+% density, x-velocity, y-velocity, and velocity-vector error.
+l2DensityHistory = nan(numberOfFrames,1);
+l2UHistory = nan(numberOfFrames,1);
+l2VHistory = nan(numberOfFrames,1);
+l2VelocityHistory = nan(numberOfFrames,1);
 progressInterval = max(1,floor(numberOfFrames/20));
-
-
 for k = 1:numberOfFrames
-
     filename = fullfile(files(k).folder,files(k).name);
-
     if k == 1
         T = T0;
     else
         T = readtable(filename,opts);
     end
-
-
     %% Validate particle identity
-
     if height(T) ~= numberOfParticles || ...
             ~isequal(T.ID,ID0)
-
         error( ...
             "Particle layout changed in %s", ...
             files(k).name);
-
     end
-
-
     if ~isequal( ...
             lower(strtrim(string(T.Type))), ...
             type0)
-
         error( ...
             "Particle Type changed in %s", ...
             files(k).name);
-
     end
-
-
     %% Numerical fields are supplied directly by C++
-
     %% Cache the numerical data
-
     frameValues = ...
         [T.x, ...
          T.y, ...
@@ -405,115 +300,109 @@ for k = 1:numberOfFrames
          T.dudt, ...
          T.dvdt, ...
          T.vorticity];
-
-
     if gpuEnabled
         frameGPU(:,:,k) = gpuArray(frameValues);
     else
         frameCPU(:,:,k) = frameValues;
     end
-
-
+    %% Four normalized L2 errors over PHYSICAL FLUID particles only
+    rhoFluid = T.rho(fluid);
+    uFluid = T.u(fluid);
+    vFluid = T.v(fluid);
+    valid = isfinite(rhoFluid) & isfinite(uFluid) & isfinite(vFluid);
+    if any(valid)
+        eRho = (rhoFluid(valid)-referenceDensity)/referenceDensity;
+        eU = (uFluid(valid)-referenceUx)/referenceSpeed;
+        eV = (vFluid(valid)-referenceUy)/referenceSpeed;
+        l2DensityHistory(k) = sqrt(mean(eRho.^2));
+        l2UHistory(k) = sqrt(mean(eU.^2));
+        l2VHistory(k) = sqrt(mean(eV.^2));
+        l2VelocityHistory(k) = sqrt(mean(eU.^2 + eV.^2));
+    end
     %% Read C++ summary values from line 3
-
     summaryLine = readmatrix( ...
         filename, ...
         'Range','A3:D3');
-
     if numel(summaryLine) >= 4
         summaryValues(k,:) = summaryLine(1,1:4);
     end
-
-
     if mod(k,progressInterval) == 0 || ...
             k == numberOfFrames
-
         fprintf( ...
             "Loaded frame %d of %d.\n", ...
             k, ...
             numberOfFrames);
-
     end
-
 end
-
-
 clear T T0 frameValues velocity summaryLine;
-
-
+%% =========================================================
+% SUMMARY LABELS / L2 COLUMNS
+% ==========================================================
+summaryHeader = readcell( ...
+    firstFilename, ...
+    'Range','A2:D2');
+summaryLabels = string(summaryHeader(1,1:4));
+summaryLabels = strtrim(summaryLabels);
+l2Columns = find(contains(lower(summaryLabels),"l2"));
+if isempty(l2Columns)
+    warning("No L2 column was found in C++ summary line 2.");
+end
 %% =========================================================
 % FIXED AXIS LIMITS OVER THE COMPLETE ANIMATION
 % ==========================================================
-
 if gpuEnabled
-
     allX = gather(reshape(frameGPU(:,1,:),[],1));
     allY = gather(reshape(frameGPU(:,2,:),[],1));
-
 else
-
     allX = reshape(frameCPU(:,1,:),[],1);
     allY = reshape(frameCPU(:,2,:),[],1);
-
 end
-
-
 allX = allX(isfinite(allX));
 allY = allY(isfinite(allY));
-
 xMin = min(allX);
 xMax = max(allX);
-
 yMin = min(allY);
 yMax = max(allY);
-
 span = max(xMax-xMin,yMax-yMin);
-
 if span <= 0 || ~isfinite(span)
     span = 1.0;
 end
-
 axisMargin = 0.03*span;
-
 xLimits = [xMin-axisMargin, xMax+axisMargin];
 yLimits = [yMin-axisMargin, yMax+axisMargin];
-
 clear allX allY;
-
-
 %% =========================================================
 % INITIAL FRAME AND COLOR LIMIT
 % ==========================================================
-
 firstFrame = getFrame(1);
-
 colorLabel = colorLabels(initialVariableIndex);
-
 fieldLimitCache = ...
     nan(numberOfCachedFields,2);
-
 [fieldMin,fieldMax] = ...
     getColorLimits(fieldColumn);
-
-
 %% =========================================================
 % FIGURE
 % ==========================================================
-
 fig = figure( ...
     'Color','w', ...
     'Position',[80 80 1250 700], ...
-    'Name','Interactive EWCSPH Cylinder Viewer', ...
+    'Name','Interactive EWCSPH Viewer', ...
     'NumberTitle','off');
-
-
-ax = axes( ...
+%% Tabs
+tabGroup = uitabgroup( ...
     fig, ...
+    'Units','normalized', ...
+    'Position',[0 0 1 1]);
+flowTab = uitab( ...
+    tabGroup, ...
+    'Title','Flow Field');
+l2Tab = uitab( ...
+    tabGroup, ...
+    'Title','L2 vs Time');
+ax = axes( ...
+    flowTab, ...
     'Position',[0.07 0.18 0.79 0.75]);
-
 hold(ax,'on');
-
-
 %% Continuous field on the existing polar grid
 % C++ orders each ring by angle, with NTheta points per ring.
 % Closing the angular seam does not add new simulation values.
@@ -535,10 +424,7 @@ hFluid = surf(ax, ...
     reshape(meshC,meshSize), ...
     'FaceColor','interp', 'EdgeColor','none');
 view(ax,2);
-
-
 %% Cylinder boundary
-
 hBoundary = scatter( ...
     ax, ...
     firstFrame(boundary,1), ...
@@ -546,8 +432,6 @@ hBoundary = scatter( ...
     42, ...
     [0 0 0], ...
     'filled');
-
-
 %% Click-selection display
 % Fluid particles remain visually hidden. Clicking the continuous surface
 % selects the nearest actual SPH fluid particle. Clicking the cylinder
@@ -561,7 +445,6 @@ hSelectedParticle = plot( ...
     'LineStyle','none', ...
     'HitTest','off', ...
     'PickableParts','none');
-
 hParticleInfo = text( ...
     ax,0.015,0.985,'', ...
     'Units','normalized', ...
@@ -574,8 +457,6 @@ hParticleInfo = text( ...
     'Visible','off', ...
     'HitTest','off', ...
     'PickableParts','none');
-
-
 %% Velocity arrows
 arrowRows = fluidRows(1:arrowStride:end);
 hVelocity = quiver(ax, ...
@@ -590,7 +471,6 @@ end
 % Keep selection attached to the field nodes and cylinder.
 hVelocity.HitTest = 'off';
 hVelocity.PickableParts = 'none';
-
 % Streamlines use instantaneous velocities on the fixed polar grid.
 hStreamlines = gobjects(0);
 streamCenter = [mean(firstFrame(boundary,1)),mean(firstFrame(boundary,2))];
@@ -615,111 +495,212 @@ wakeX = linspace(1.5*wallRadius,0.6*outerRadius,5);
 seedX = [seedX,streamCenter(1)+wakeX,streamCenter(1)+wakeX];
 seedY = [seedY,streamCenter(2)+0.5*wallRadius*ones(1,5), ...
                streamCenter(2)-0.5*wallRadius*ones(1,5)];
-
 axis(ax,'equal');
-
 xlim(ax,xLimits);
 ylim(ax,yLimits);
-
 xlabel(ax,'x (m)');
 ylabel(ax,'y (m)');
-
 grid(ax,'off');
 box(ax,'on');
-
 setFieldColormap;
-
 c = colorbar(ax);
 c.Label.String = colorLabel;
-
 clim(ax,[fieldMin fieldMax]);
-
 titleHandle = title(ax,'');
+%% =========================================================
+% L2 ERROR VS TIME TAB -- FOUR SEPARATE PLOT BOXES
+% ==========================================================
 
+% Keep the four errors separate so each history has its own y-scale.
+% Layout inside the same tab:
+%   top-left     : L2(rho)
+%   top-right    : L2(u)
+%   bottom-left  : L2(v)
+%   bottom-right : L2(velocity vector)
+
+l2DensityPlot = l2DensityHistory;
+l2UPlot = l2UHistory;
+l2VPlot = l2VHistory;
+l2VelocityPlot = l2VelocityHistory;
+
+% A logarithmic axis cannot display exact zero. Keep the stored values
+% unchanged and hide only zero/non-positive values from the display.
+l2DensityPlot(l2DensityPlot <= 0) = NaN;
+l2UPlot(l2UPlot <= 0) = NaN;
+l2VPlot(l2VPlot <= 0) = NaN;
+l2VelocityPlot(l2VelocityPlot <= 0) = NaN;
+
+% ---------------------------------------------------------
+% 1) Density L2 -- top left
+% ---------------------------------------------------------
+axL2Density = axes( ...
+    l2Tab, ...
+    'Position',[0.08 0.56 0.38 0.36]);
+
+semilogy( ...
+    axL2Density, ...
+    time, ...
+    l2DensityPlot, ...
+    '-', ...
+    'LineWidth',1.6);
+
+grid(axL2Density,'on');
+box(axL2Density,'on');
+xlabel(axL2Density,'Time, t (s)');
+ylabel(axL2Density,'Normalized L_2 error');
+title(axL2Density,'Density: L_2(\rho)','Interpreter','tex');
+
+hCurrentTimeDensity = xline( ...
+    axL2Density, ...
+    time(1), ...
+    '--', ...
+    'Current frame', ...
+    'HandleVisibility','off');
+
+% ---------------------------------------------------------
+% 2) x-velocity L2 -- top right
+% ---------------------------------------------------------
+axL2U = axes( ...
+    l2Tab, ...
+    'Position',[0.56 0.56 0.38 0.36]);
+
+semilogy( ...
+    axL2U, ...
+    time, ...
+    l2UPlot, ...
+    '-', ...
+    'LineWidth',1.6);
+
+grid(axL2U,'on');
+box(axL2U,'on');
+xlabel(axL2U,'Time, t (s)');
+ylabel(axL2U,'Normalized L_2 error');
+title(axL2U,'x velocity: L_2(u)','Interpreter','tex');
+
+hCurrentTimeU = xline( ...
+    axL2U, ...
+    time(1), ...
+    '--', ...
+    'Current frame', ...
+    'HandleVisibility','off');
+
+% ---------------------------------------------------------
+% 3) y-velocity L2 -- bottom left
+% ---------------------------------------------------------
+axL2V = axes( ...
+    l2Tab, ...
+    'Position',[0.08 0.10 0.38 0.36]);
+
+semilogy( ...
+    axL2V, ...
+    time, ...
+    l2VPlot, ...
+    '-', ...
+    'LineWidth',1.6);
+
+grid(axL2V,'on');
+box(axL2V,'on');
+xlabel(axL2V,'Time, t (s)');
+ylabel(axL2V,'Normalized L_2 error');
+title(axL2V,'y velocity: L_2(v)','Interpreter','tex');
+
+hCurrentTimeV = xline( ...
+    axL2V, ...
+    time(1), ...
+    '--', ...
+    'Current frame', ...
+    'HandleVisibility','off');
+
+% ---------------------------------------------------------
+% 4) velocity-vector L2 -- bottom right
+% ---------------------------------------------------------
+axL2Velocity = axes( ...
+    l2Tab, ...
+    'Position',[0.56 0.10 0.38 0.36]);
+
+semilogy( ...
+    axL2Velocity, ...
+    time, ...
+    l2VelocityPlot, ...
+    '-', ...
+    'LineWidth',1.6);
+
+grid(axL2Velocity,'on');
+box(axL2Velocity,'on');
+xlabel(axL2Velocity,'Time, t (s)');
+ylabel(axL2Velocity,'Normalized L_2 error');
+title(axL2Velocity,'Velocity vector: L_2(\bf{u})','Interpreter','tex');
+
+hCurrentTimeVelocity = xline( ...
+    axL2Velocity, ...
+    time(1), ...
+    '--', ...
+    'Current frame', ...
+    'HandleVisibility','off');
 
 %% =========================================================
 % NAVIGATION CONTROLS
 % ==========================================================
-
 firstButton = uicontrol( ...
-    fig, ...
+    flowTab, ...
     'Style','pushbutton', ...
     'String','|<', ...
     'Units','normalized', ...
     'Position',[0.07 0.065 0.055 0.055]);
-
-
 backButton = uicontrol( ...
-    fig, ...
+    flowTab, ...
     'Style','pushbutton', ...
     'String','<', ...
     'Units','normalized', ...
     'Position',[0.13 0.065 0.055 0.055]);
-
-
 playButton = uicontrol( ...
-    fig, ...
+    flowTab, ...
     'Style','pushbutton', ...
     'String','Play', ...
     'Units','normalized', ...
     'Position',[0.19 0.065 0.075 0.055]);
-
-
 nextButton = uicontrol( ...
-    fig, ...
+    flowTab, ...
     'Style','pushbutton', ...
     'String','>', ...
     'Units','normalized', ...
     'Position',[0.27 0.065 0.055 0.055]);
-
-
 lastButton = uicontrol( ...
-    fig, ...
+    flowTab, ...
     'Style','pushbutton', ...
     'String','>|', ...
     'Units','normalized', ...
     'Position',[0.33 0.065 0.055 0.055]);
-
-
 comparisonButton = uicontrol( ...
-    fig, ...
+    flowTab, ...
     'Style','pushbutton', ...
     'String','Comparison', ...
     'Units','normalized', ...
     'Position',[0.395 0.065 0.085 0.055], ...
     'TooltipString','Open one window with SPH vs analytical pressure, forces, and drag coefficient');
-
-
-
 historyButton = uicontrol( ...
-    fig, ...
+    flowTab, ...
     'Style','pushbutton', ...
     'String','History', ...
     'Units','normalized', ...
     'Position',[0.07 0.015 0.075 0.043]);
-
-
 saveVideoButton = uicontrol( ...
-    fig, ...
+    flowTab, ...
     'Style','pushbutton', ...
     'String','Save MP4', ...
     'Units','normalized', ...
     'Position',[0.15 0.015 0.075 0.043], ...
     'TooltipString','Save all loaded frames as an MP4 animation');
-
-
 parameterText = uicontrol( ...
-    fig, ...
+    flowTab, ...
     'Style','text', ...
     'String','Displayed parameter:', ...
     'BackgroundColor','w', ...
     'HorizontalAlignment','right', ...
     'Units','normalized', ...
     'Position',[0.49 0.018 0.13 0.035]);
-
-
 parameterMenu = uicontrol( ...
-    fig, ...
+    flowTab, ...
     'Style','popupmenu', ...
     'String',cellstr(parameterLabels), ...
     'Value',initialVariableIndex, ...
@@ -728,23 +709,15 @@ parameterMenu = uicontrol( ...
     'Position',[0.625 0.018 0.235 0.043], ...
     'TooltipString', ...
     'Choose the parameter used to colour fluid particles');
-
-
 if numberOfFrames > 1
-
     sliderStep = ...
         [1/(numberOfFrames-1), ...
          min(1,10/(numberOfFrames-1))];
-
 else
-
     sliderStep = [1 1];
-
 end
-
-
 frameSlider = uicontrol( ...
-    fig, ...
+    flowTab, ...
     'Style','slider', ...
     'Min',1, ...
     'Max',max(1,numberOfFrames), ...
@@ -752,201 +725,120 @@ frameSlider = uicontrol( ...
     'SliderStep',sliderStep, ...
     'Units','normalized', ...
     'Position',[0.49 0.075 0.32 0.035]);
-
-
 frameLabel = uicontrol( ...
-    fig, ...
+    flowTab, ...
     'Style','text', ...
     'String','', ...
     'BackgroundColor','w', ...
     'HorizontalAlignment','left', ...
     'Units','normalized', ...
     'Position',[0.82 0.058 0.17 0.065]);
-
-
 %% =========================================================
 % STATE AND TIMER
 % ==========================================================
-
 playTimer = timer( ...
     'ExecutionMode','fixedSpacing', ...
     'Period',1/playbackFPS, ...
     'BusyMode','drop', ...
     'TimerFcn',@timerTick);
-
-
 state.index = 1;
 state.currentFrame = firstFrame;
 state.selectedID = [];
-
 guidata(fig,state);
-
-
 %% Callbacks
-
 firstButton.Callback = @(~,~)showFrame(1);
-
 backButton.Callback = @(~,~)stepFrame(-1);
-
 playButton.Callback = @togglePlay;
-
 nextButton.Callback = @(~,~)stepFrame(1);
-
 lastButton.Callback = @(~,~)showFrame(numberOfFrames);
-
 historyButton.Callback = @showSelectedHistory;
-
 comparisonButton.Callback = @showCombinedComparison;
-
 saveVideoButton.Callback = @saveAnimation;
-
 parameterMenu.Callback = @parameterChanged;
-
 frameSlider.Callback = @sliderMoved;
-
 fig.WindowKeyPressFcn = @keyPressed;
-
 fig.CloseRequestFcn = @closeViewer;
-
-
 %% Particle selection by mouse click
 % Do not use MATLAB data-cursor indexing on the interpolated surface.
 % A surface click is converted to the nearest real SPH particle instead.
 hFluid.HitTest = 'on';
 hFluid.PickableParts = 'all';
 hFluid.ButtonDownFcn = @selectNearestParticle;
-
 hBoundary.HitTest = 'on';
 hBoundary.PickableParts = 'all';
 hBoundary.ButtonDownFcn = @selectNearestParticle;
-
-
 showFrame(1);
-
-
 %% =========================================================
 % NESTED FUNCTIONS
 % ==========================================================
-
     function [fieldMinLocal,fieldMaxLocal] = ...
             getColorLimits(column)
-
         %% Manual limits
-
         if ~isempty(manualColorLimits)
-
             fieldMinLocal = manualColorLimits(1);
             fieldMaxLocal = manualColorLimits(2);
-
             return;
-
         end
-
-
         %% Use cached limits if already calculated
-
         if all(isfinite(fieldLimitCache(column,:)))
-
             fieldMinLocal = ...
                 fieldLimitCache(column,1);
-
             fieldMaxLocal = ...
                 fieldLimitCache(column,2);
-
             return;
-
         end
-
-
         %% Get ALL fluid values for this parameter
-
         if gpuEnabled
-
             values = reshape( ...
                 frameGPU(fluid,column,:), ...
                 [],1);
-
             values = ...
                 sort(values(isfinite(values)));
-
         else
-
             values = reshape( ...
                 frameCPU(fluid,column,:), ...
                 [],1);
-
             values = ...
                 sort(values(isfinite(values)));
-
         end
-
-
         numberOfValues = numel(values);
-
-
         %% Percentile limits
-
         if numberOfValues == 0
-
             fieldMinLocal = 0.0;
             fieldMaxLocal = 1.0;
-
         else
-
             lowerIndex = max( ...
                 1, ...
                 ceil( ...
                     colorPercentiles(1)/100 * ...
                     numberOfValues));
-
             upperIndex = min( ...
                 numberOfValues, ...
                 ceil( ...
                     colorPercentiles(2)/100 * ...
                     numberOfValues));
-
-
             if gpuEnabled
-
                 fieldMinLocal = ...
                     gather(values(lowerIndex));
-
                 fieldMaxLocal = ...
                     gather(values(upperIndex));
-
             else
-
                 fieldMinLocal = ...
                     values(lowerIndex);
-
                 fieldMaxLocal = ...
                     values(upperIndex);
-
             end
-
         end
-
-
         %% Velocity magnitude cannot be negative
-
         if cacheNames(column) == "velocity"
-
             fieldMinLocal = 0.0;
-
         end
-
-
         %% Prevent identical colour limits
-
         if fieldMinLocal == fieldMaxLocal
-
             fieldMaxLocal = ...
                 fieldMinLocal + ...
                 max(1.0,abs(fieldMinLocal)*0.01);
-
         end
-
-
         if cacheNames(column) == "vorticity"
             magnitude = max(abs([fieldMinLocal fieldMaxLocal]));
             if magnitude == 0 || ~isfinite(magnitude)
@@ -955,52 +847,33 @@ showFrame(1);
             fieldMinLocal = -magnitude;
             fieldMaxLocal = magnitude;
         end
-
         fieldLimitCache(column,:) = ...
             [fieldMinLocal fieldMaxLocal];
-
     end
-
-
     %% ---------------------------------------------------------
     % Return one cached frame to CPU
     % ----------------------------------------------------------
-
     function frame = getFrame(frameIndex)
-
         if gpuEnabled
-
             frame = ...
                 gather(frameGPU(:,:,frameIndex));
-
         else
-
             frame = ...
                 frameCPU(:,:,frameIndex);
-
         end
-
     end
-
-
     %% ---------------------------------------------------------
     % Display requested frame
     % ----------------------------------------------------------
-
     function showFrame(requestedIndex)
-
         requestedIndex = ...
             max( ...
                 1, ...
                 min( ...
                     numberOfFrames, ...
                     round(requestedIndex)));
-
-
         frame = ...
             getFrame(requestedIndex);
-
-
         %% Continuous field values (same mesh connectivity every frame)
         meshX = frame(surfaceRows(:),1);
         meshY = frame(surfaceRows(:),2);
@@ -1010,8 +883,6 @@ showFrame(1);
             'XData',reshape(meshX,meshSize), ...
             'YData',reshape(meshY,meshSize), ...
             'CData',reshape(meshC,meshSize));
-
-
         %% Velocity arrow update
         arrowU = frame(arrowRows,6);
         arrowV = frame(arrowRows,7);
@@ -1023,26 +894,17 @@ showFrame(1);
             'YData',frame(arrowRows,2), ...
             'UData',arrowU, ...
             'VData',arrowV);
-
         updateStreamlines(frame);
-
         %% Boundary positions
-
         set( ...
             hBoundary, ...
             'XData',frame(boundary,1), ...
             'YData',frame(boundary,2));
-
-
         %% C++ frame summary
-
         L2pressure = ...
             summaryValues(requestedIndex,1);
-
         KE = ...
             summaryValues(requestedIndex,2);
-
-
         titleHandle.String = sprintf( ...
             ['EWCSPH Cylinder, Re = %.0f, h/dp = %.2f, t = %.3f s' ...
              '   |   KE = %.4g   |   L_2(P) = %.4g'], ...
@@ -1051,29 +913,35 @@ showFrame(1);
             time(requestedIndex), ...
             KE, ...
             L2pressure);
-
-
         frameSlider.Value = ...
             requestedIndex;
-
-
         frameLabel.String = sprintf( ...
             'Frame %d / %d\nt = %.3f s', ...
             requestedIndex, ...
             numberOfFrames, ...
             time(requestedIndex));
+        % Keep the L2 time marker synchronized with the displayed frame.
+        if isgraphics(hCurrentTimeDensity)
+            hCurrentTimeDensity.Value = time(requestedIndex);
+        end
 
+        if isgraphics(hCurrentTimeU)
+            hCurrentTimeU.Value = time(requestedIndex);
+        end
 
+        if isgraphics(hCurrentTimeV)
+            hCurrentTimeV.Value = time(requestedIndex);
+        end
+
+        if isgraphics(hCurrentTimeVelocity)
+            hCurrentTimeVelocity.Value = time(requestedIndex);
+        end
         currentState = guidata(fig);
-
         currentState.index = ...
             requestedIndex;
-
         currentState.currentFrame = ...
             frame;
-
         guidata(fig,currentState);
-
         % Keep the selected physical particle highlighted as frames change.
         if ~isempty(currentState.selectedID)
             selectedRow = find(ID0 == currentState.selectedID,1);
@@ -1081,221 +949,141 @@ showFrame(1);
                 updateSelectedParticleDisplay(selectedRow,frame);
             end
         end
-
-
         drawnow limitrate;
-
     end
-
-
     %% ---------------------------------------------------------
     % Step one frame
     % ----------------------------------------------------------
-
     function stepFrame(direction)
-
         stopPlayback;
-
         currentState = guidata(fig);
-
         showFrame( ...
             currentState.index + direction);
-
     end
-
-
     %% ---------------------------------------------------------
     % Play / pause
     % ----------------------------------------------------------
-
     function togglePlay(~,~)
-
         if strcmp(playTimer.Running,'off')
-
             playButton.String = 'Pause';
-
             start(playTimer);
-
         else
-
             stopPlayback;
-
         end
-
     end
-
-
     %% ---------------------------------------------------------
     % Timer
     % ----------------------------------------------------------
-
     function timerTick(~,~)
-
         if ~isvalid(fig)
             return;
         end
-
         currentState = guidata(fig);
-
         if currentState.index >= numberOfFrames
-
             stopPlayback;
-
         else
-
             showFrame( ...
                 currentState.index + 1);
-
         end
-
     end
-
-
     %% ---------------------------------------------------------
     % Stop playback
     % ----------------------------------------------------------
-
     function stopPlayback
-
         if strcmp(playTimer.Running,'on')
             stop(playTimer);
         end
-
         if isvalid(playButton)
             playButton.String = 'Play';
         end
-
     end
-
-
     %% ---------------------------------------------------------
     % Slider
     % ----------------------------------------------------------
-
     function sliderMoved(source,~)
-
         stopPlayback;
-
         showFrame(source.Value);
-
     end
-
-
     %% ---------------------------------------------------------
     % Change displayed variable
     % ----------------------------------------------------------
-
     function parameterChanged(source,~)
-
         stopPlayback;
-
         selectedIndex = ...
             source.Value;
-
         plotVariable = ...
             allowedVariables(selectedIndex);
-
         fieldColumn = ...
             find(cacheNames == plotVariable,1);
-
         c.Label.String = ...
             colorLabels(selectedIndex);
         setFieldColormap;
-
-
         [newFieldMin,newFieldMax] = ...
             getColorLimits(fieldColumn);
-
         clim( ...
             ax, ...
             [newFieldMin newFieldMax]);
-
-
         currentState = guidata(fig);
-
         showFrame(currentState.index);
-
     end
-
-
     %% ---------------------------------------------------------
     % Save animation as MP4
     % ----------------------------------------------------------
-
     function saveAnimation(~,~)
-
         stopPlayback;
-
         currentState = guidata(fig);
         originalFrame = currentState.index;
-
         % Use the currently selected displayed quantity in the filename.
         defaultName = sprintf( ...
             'EWCSPH_hdp_%g_%s.mp4', ...
             hCoefficient, ...
             char(plotVariable));
-
         [fileName,pathName] = uiputfile( ...
             '*.mp4', ...
             'Save animation as', ...
             fullfile(simulationFolder,defaultName));
-
         if isequal(fileName,0)
             return;
         end
-
         outputFile = fullfile(pathName,fileName);
-
         writer = VideoWriter(outputFile,'MPEG-4');
         writer.FrameRate = videoFPS;
         writer.Quality = videoQuality;
-
         % Save current interface state.
         controls = [ ...
             firstButton,backButton,playButton,nextButton,lastButton, ...
             comparisonButton,historyButton,saveVideoButton, ...
             parameterText,parameterMenu,frameSlider,frameLabel];
-
         controlVisibility = get(controls,'Visible');
         oldAxesPosition = ax.Position;
         oldSelectedVisibility = hSelectedParticle.Visible;
         oldInfoVisibility = hParticleInfo.Visible;
-
         % Temporarily clear the selected particle so its marker/info box
         % does not reappear when showFrame updates each movie frame.
         movieState = currentState;
         movieState.selectedID = [];
         guidata(fig,movieState);
-
         try
             % Hide viewer controls and particle-selection annotation so the
             % exported movie contains only the scientific visualisation.
             set(controls,'Visible','off');
             hSelectedParticle.Visible = 'off';
             hParticleInfo.Visible = 'off';
-
             % Use more of the figure area for the exported animation.
             ax.Position = [0.07 0.08 0.80 0.86];
-
             open(writer);
-
             for frameIndex = 1:numberOfFrames
                 showFrame(frameIndex);
                 drawnow;
-
                 movieFrame = getframe(fig);
                 writeVideo(writer,movieFrame);
             end
-
             close(writer);
-
         catch exportError
-
             try
                 close(writer);
             catch
             end
-
             % Restore the viewer before reporting the error.
             ax.Position = oldAxesPosition;
             for controlIndex = 1:numel(controls)
@@ -1305,10 +1093,8 @@ showFrame(1);
             hSelectedParticle.Visible = oldSelectedVisibility;
             hParticleInfo.Visible = oldInfoVisibility;
             showFrame(originalFrame);
-
             rethrow(exportError);
         end
-
         % Restore interactive viewer.
         ax.Position = oldAxesPosition;
         for controlIndex = 1:numel(controls)
@@ -1318,70 +1104,44 @@ showFrame(1);
         hSelectedParticle.Visible = oldSelectedVisibility;
         hParticleInfo.Visible = oldInfoVisibility;
         showFrame(originalFrame);
-
         fprintf('\nAnimation saved to:\n%s\n',outputFile);
         msgbox(sprintf('Animation saved to:\n%s',outputFile), ...
             'Animation saved');
-
     end
-
-
     %% ---------------------------------------------------------
     % Keyboard controls
     % ----------------------------------------------------------
-
     function keyPressed(~,event)
-
         switch event.Key
-
             case 'space'
-
                 togglePlay([],[]);
-
             case 'leftarrow'
-
                 stepFrame(-1);
-
             case 'rightarrow'
-
                 stepFrame(1);
-
             case 'home'
-
                 stopPlayback;
                 showFrame(1);
-
             case 'end'
-
                 stopPlayback;
                 showFrame(numberOfFrames);
-
         end
-
     end
-
-
     %% ---------------------------------------------------------
     % Select nearest actual SPH particle from a mouse click
     % ----------------------------------------------------------
-
     function selectNearestParticle(source,~)
-
         % Left click only.
         if ~strcmp(fig.SelectionType,'normal')
             return;
         end
-
         stopPlayback;
-
         currentState = guidata(fig);
         frame = currentState.currentFrame;
-
         % Click location in axes coordinates.
         point = ax.CurrentPoint;
         xClick = point(1,1);
         yClick = point(1,2);
-
         % Select only from the physical particle set represented by the
         % clicked graphics object.
         if isequal(source,hBoundary)
@@ -1389,40 +1149,29 @@ showFrame(1);
         else
             candidateRows = fluidRows;
         end
-
         dx = frame(candidateRows,1) - xClick;
         dy = frame(candidateRows,2) - yClick;
-
         [~,nearestIndex] = min(dx.^2 + dy.^2);
         row = candidateRows(nearestIndex);
-
         currentState.selectedID = ID0(row);
         guidata(fig,currentState);
-
         updateSelectedParticleDisplay(row,frame);
-
     end
-
-
     %% ---------------------------------------------------------
     % Update selected-particle marker and numerical information
     % ----------------------------------------------------------
-
     function updateSelectedParticleDisplay(row,frame)
-
         if boundary(row)
             particleType = 'Boundary';
         else
             particleType = 'Fluid';
         end
-
         % Highlight only the selected particle; the rest of the fluid
         % particles remain hidden so the field stays continuous.
         set( ...
             hSelectedParticle, ...
             'XData',frame(row,1), ...
             'YData',frame(row,2));
-
         hParticleInfo.String = sprintf( ...
             ['Selected %s particle\n' ...
              'ID = %d\n' ...
@@ -1450,54 +1199,32 @@ showFrame(1);
             frame(row,9), ...
             frame(row,10), ...
             frame(row,11));
-
         hParticleInfo.Visible = 'on';
-
     end
-
-
     %% ---------------------------------------------------------
     % History of selected physical particle
     % ----------------------------------------------------------
-
     function showSelectedHistory(~,~)
-
         stopPlayback;
-
         currentState = guidata(fig);
-
-
         if isempty(currentState.selectedID)
-
             errordlg( ...
                 'Pause and click a particle first.', ...
                 'No particle selected');
-
             return;
-
         end
-
-
         selectedID = ...
             currentState.selectedID;
-
         row = ...
             find(ID0 == selectedID,1);
-
-
         % x, y, u, v, pressure, rho
         historyColumns = ...
             [1 2 6 7 5 3];
-
         history = zeros( ...
             numberOfFrames, ...
             numel(historyColumns));
-
-
         for columnIndex = 1:numel(historyColumns)
-
             if gpuEnabled
-
                 history(:,columnIndex) = ...
                     gather(reshape( ...
                         frameGPU( ...
@@ -1505,9 +1232,7 @@ showFrame(1);
                             historyColumns(columnIndex), ...
                             :), ...
                         [],1));
-
             else
-
                 history(:,columnIndex) = ...
                     reshape( ...
                         frameCPU( ...
@@ -1515,100 +1240,65 @@ showFrame(1);
                             historyColumns(columnIndex), ...
                             :), ...
                         [],1);
-
             end
-
         end
-
-
         historyFigure = figure( ...
             'Color','w', ...
             'Position',[130 60 1100 760]);
-
-
         tiledlayout( ...
             historyFigure, ...
             3,2, ...
             'TileSpacing','compact', ...
             'Padding','compact');
-
-
         nexttile;
-
         plot( ...
             time, ...
             history(:,1), ...
             'LineWidth',1.3);
-
         ylabel('x (m)');
         grid on;
-
-
         nexttile;
-
         plot( ...
             time, ...
             history(:,2), ...
             'LineWidth',1.3);
-
         ylabel('y (m)');
         grid on;
-
-
         nexttile;
-
         plot( ...
             time, ...
             history(:,3), ...
             'LineWidth',1.3);
-
         ylabel('u (m/s)');
         grid on;
-
-
         nexttile;
-
         plot( ...
             time, ...
             history(:,4), ...
             'LineWidth',1.3);
-
         ylabel('v (m/s)');
         grid on;
-
-
         nexttile;
-
         plot( ...
             time, ...
             history(:,5), ...
             'LineWidth',1.3);
-
         xlabel('Time (s)');
         ylabel('Pressure (Pa)');
         grid on;
-
-
         nexttile;
-
         plot( ...
             time, ...
             history(:,6), ...
             'LineWidth',1.3);
-
         xlabel('Time (s)');
         ylabel('\rho (kg/m^3)');
         grid on;
-
-
         sgtitle(sprintf( ...
             'C++ History for Particle ID %d, h/dp = %.2f', ...
             selectedID, ...
             hCoefficient));
-
     end
-
-
     %% ---------------------------------------------------------
     % Combined SPH-versus-analytical comparison
     %
@@ -1622,61 +1312,45 @@ showFrame(1);
     %   Analytical pressure/forces/CD are read from
     %   PotentialFlowValidation.csv written by C++.
     % ----------------------------------------------------------
-
     function showCombinedComparison(~,~)
-
         stopPlayback;
-
         currentState = guidata(fig);
         currentFrameIndex = currentState.index;
         currentFrame = currentState.currentFrame;
         currentTime = time(currentFrameIndex);
-
-
         %% -----------------------------------------------------
         % Read C++ analytical potential-flow output
         % ------------------------------------------------------
-
         validationFilename = fullfile( ...
             simulationFolder, ...
             "PotentialFlowValidation.csv");
-
         if ~isfile(validationFilename)
             errordlg( ...
                 'PotentialFlowValidation.csv was not found.', ...
                 'Validation file not found');
             return;
         end
-
         validationData = readmatrix( ...
             validationFilename, ...
             'Range',sprintf('A2:I%d',numel(boundaryRows)+1));
-
         if size(validationData,2) < 9 || isempty(validationData)
             errordlg( ...
                 'PotentialFlowValidation.csv has an unexpected format.', ...
                 'Invalid validation file');
             return;
         end
-
         validationID = validationData(:,1);
         thetaValidation = validationData(:,2);
         pExact = validationData(:,4);
-
         validRows = ...
             isfinite(validationID) & ...
             isfinite(thetaValidation) & ...
             isfinite(pExact);
-
         validationID = validationID(validRows);
         thetaValidation = thetaValidation(validRows);
         pExact = pExact(validRows);
-
-
         %% Match analytical boundary points to the same SPH IDs
-
         [foundID,frameRows] = ismember(validationID,ID0);
-
         if ~all(foundID) || any(~boundary(frameRows(foundID)))
             errordlg( ...
                 ['Could not match every analytical cylinder point to ' ...
@@ -1684,64 +1358,47 @@ showFrame(1);
                 'Boundary-ID mismatch');
             return;
         end
-
         % Cached frame columns:
         % [x y rho drhodt pressure u v velocity dudt dvdt vorticity]
         pSPH = currentFrame(frameRows,5);
-
         thetaDegrees = rad2deg(thetaValidation);
         [thetaDegrees,comparisonOrder] = sort(thetaDegrees);
         pExact = pExact(comparisonOrder);
         pSPH = pSPH(comparisonOrder);
-
-
         %% Integrated analytical values written by C++
-
         rawValidation = readcell(validationFilename,'Delimiter',',');
-
         FxExact = readCppSummaryValue( ...
             rawValidation,"Fx",validationFilename);
-
         FyExact = readCppSummaryValue( ...
             rawValidation,"Fy",validationFilename);
-
         CDExact = readCppSummaryValue( ...
             rawValidation,"CD",validationFilename);
-
-
         %% -----------------------------------------------------
         % Read C++ SPH force history
         % ------------------------------------------------------
-
         forceFiles = dir(fullfile( ...
             simulationFolder, ...
             "CylinderForces_hdp_*.csv"));
-
         if isempty(forceFiles)
             errordlg( ...
                 'No CylinderForces_hdp_*.csv file was found.', ...
                 'Force file not found');
             return;
         end
-
         forceH = nan(numel(forceFiles),1);
-
         for kk = 1:numel(forceFiles)
             token = regexp( ...
                 forceFiles(kk).name, ...
                 ['CylinderForces_hdp_(' numberPattern ')\.csv$'], ...
                 'tokens', ...
                 'once');
-
             if ~isempty(token)
                 forceH(kk) = str2double(token{1});
             end
         end
-
         matchingForce = ...
             isfinite(forceH) & ...
             abs(forceH-hCoefficient) <= hTolerance;
-
         if ~any(matchingForce)
             errordlg( ...
                 sprintf( ...
@@ -1750,20 +1407,15 @@ showFrame(1);
                 'Force file not found');
             return;
         end
-
         forceIndex = find(matchingForce,1);
-
         forceFilename = fullfile( ...
             forceFiles(forceIndex).folder, ...
             forceFiles(forceIndex).name);
-
         F = readtable(forceFilename);
-
         requiredForceColumns = ...
             ["t","FxPressure","FyPressure", ...
              "FxViscous","FyViscous", ...
              "Fx","Fy","CD"];
-
         if ~all(ismember(requiredForceColumns,string(F.Properties.VariableNames)))
             errordlg( ...
                 ['The cylinder-force CSV does not contain the expected ' ...
@@ -1771,63 +1423,46 @@ showFrame(1);
                 'Invalid force file');
             return;
         end
-
         [~,nearestForceIndex] = min(abs(F.t-currentTime));
         forceTime = F.t(nearestForceIndex);
         currentFx = F.Fx(nearestForceIndex);
         currentFy = F.Fy(nearestForceIndex);
         currentCD = F.CD(nearestForceIndex);
-
-
         %% -----------------------------------------------------
         % One combined comparison window
         % ------------------------------------------------------
-
         comparisonFigure = figure( ...
             'Color','w', ...
             'Position',[90 45 1250 820], ...
             'Name','Cylinder: SPH versus Analytical', ...
             'NumberTitle','off');
-
         tiledlayout( ...
             comparisonFigure, ...
             2,2, ...
             'TileSpacing','compact', ...
             'Padding','compact');
-
-
         % ------------------------------------------------------
         % 1. Surface pressure
         % ------------------------------------------------------
-
         nexttile;
-
         plot( ...
             thetaDegrees,pSPH,'o-', ...
             'LineWidth',1.2, ...
             'MarkerSize',4);
-
         hold on;
-
         plot( ...
             thetaDegrees,pExact,'--', ...
             'LineWidth',1.5);
-
         hold off;
-
         xlabel('\theta (deg)');
         ylabel('Surface pressure (Pa)');
         title(sprintf('Surface pressure at t = %.4g s',currentTime));
         legend('SPH','Analytical','Location','best');
         grid on;
-
-
         % ------------------------------------------------------
         % 2. Drag-direction force history
         % ------------------------------------------------------
-
         nexttile;
-
         plot(F.t,F.FxPressure,'LineWidth',1.1);
         hold on;
         plot(F.t,F.FxViscous,'LineWidth',1.1);
@@ -1835,7 +1470,6 @@ showFrame(1);
         yline(FxExact,'--','LineWidth',1.2);
         xline(currentTime,':','LineWidth',1.0);
         hold off;
-
         xlabel('Time (s)');
         ylabel('F_x (N/m)');
         title('Drag-direction force');
@@ -1847,14 +1481,10 @@ showFrame(1);
             'Current viewer time', ...
             'Location','best');
         grid on;
-
-
         % ------------------------------------------------------
         % 3. Lift-direction force history
         % ------------------------------------------------------
-
         nexttile;
-
         plot(F.t,F.FyPressure,'LineWidth',1.1);
         hold on;
         plot(F.t,F.FyViscous,'LineWidth',1.1);
@@ -1862,7 +1492,6 @@ showFrame(1);
         yline(FyExact,'--','LineWidth',1.2);
         xline(currentTime,':','LineWidth',1.0);
         hold off;
-
         xlabel('Time (s)');
         ylabel('F_y (N/m)');
         title('Lift-direction force');
@@ -1874,20 +1503,15 @@ showFrame(1);
             'Current viewer time', ...
             'Location','best');
         grid on;
-
-
         % ------------------------------------------------------
         % 4. Drag coefficient history
         % ------------------------------------------------------
-
         nexttile;
-
         plot(F.t,F.CD,'LineWidth',1.4);
         hold on;
         yline(CDExact,'--','LineWidth',1.2);
         xline(currentTime,':','LineWidth',1.0);
         hold off;
-
         xlabel('Time (s)');
         ylabel('C_D');
         title('Drag coefficient');
@@ -1897,14 +1521,10 @@ showFrame(1);
             'Current viewer time', ...
             'Location','best');
         grid on;
-
-
         sgtitle(sprintf( ...
             ['SPH vs Analytical, Re = %.0f, h/dp = %.2f' ...
              '   |   viewer t = %.4g s'], ...
             reynoldsNumber,hCoefficient,currentTime));
-
-
         fprintf('\nCombined SPH-versus-analytical comparison\n');
         fprintf('Viewer time = %.16e s\n',currentTime);
         fprintf('Nearest C++ force time = %.16e s\n',forceTime);
@@ -1917,39 +1537,25 @@ showFrame(1);
         fprintf(['Note: the SPH case uses a zero-tangential-gradient ' ...
                  'cylinder boundary and viscosity; the analytical ' ...
                  'reference is inviscid potential flow.\n']);
-
     end
-
-
     function value = readCppSummaryValue(rawData,label,sourceFilename)
-
         value = NaN;
-
         for row = 1:size(rawData,1)
-
             firstCell = rawData{row,1};
-
             if (ischar(firstCell) || isstring(firstCell)) && ...
                     strcmpi(strtrim(string(firstCell)),label)
-
                 candidate = rawData{row,2};
-
                 if isnumeric(candidate) && isscalar(candidate)
                     value = double(candidate);
                 else
                     value = str2double(string(candidate));
                 end
-
                 return;
             end
         end
-
         error("Could not find C++ summary value '%s' in %s.", ...
             label,sourceFilename);
-
     end
-
-
     % Instantaneous streamlines; these are not time-dependent trajectories.
     function updateStreamlines(frame)
         delete(hStreamlines(isgraphics(hStreamlines)));
@@ -1985,9 +1591,7 @@ showFrame(1);
             hStreamlines(end+1,1) = h;
         end
     end
-
     %% Vorticity is supplied directly by the C++ output.
-
     function setFieldColormap
         if plotVariable == "vorticity"
             anchors = [0.10 0.25 0.80; 1 1 1; 0.80 0.10 0.10];
@@ -1997,21 +1601,14 @@ showFrame(1);
             colormap(ax,turbo);
         end
     end
-
     %% ---------------------------------------------------------
     % Clean close
     % ----------------------------------------------------------
-
     function closeViewer(~,~)
-
         stopPlayback;
-
         if isvalid(playTimer)
             delete(playTimer);
         end
-
         delete(fig);
-
     end
-
-end 
+end
