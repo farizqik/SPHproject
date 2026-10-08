@@ -1,0 +1,6 @@
+PotentialFlowLocalComparison_*.csv
+PotentialFlowGlobalComparison_*.csv
+*.exe
+*.obj
+*.o
+build/

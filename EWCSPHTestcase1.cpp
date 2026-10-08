@@ -62,15 +62,16 @@ const double tvis = 1.0;
 const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder;
 const double R = 10*Dcylinder;
+
 //const double dr0 = sqrt(2.0*viscosity*tvis);
 const double dr0 = Dcylinder/10.0;
 //double drhodtexact = -100;
 const double alphaAV = 0.01;
-const double deltadifussion = 0.1;
+const double deltadifussion = 0.05;
 
 
-
-const int Nr = 30;
+const int NsupportLayers = 2;
+const int Nr = 50;
 const int Nbuffer = 8;      // open-boundary buffer rings
 int NrTotal = Nr + Nbuffer;
 
@@ -502,11 +503,24 @@ void applyCylinderFreeSlip(
     vector<double>& v)
 {
     const int j = i + NTheta;
-    const double tx = -sin(theta[i]);
-    const double ty =  cos(theta[i]);
-    const double ut = u[j]*tx + v[j]*ty;
-    u[i] = ut*tx;
-    v[i] = ut*ty;
+
+    const double th = theta[i];
+
+    const double nx = cos(th);
+    const double ny = sin(th);
+
+    const double tx = -sin(th);
+    const double ty =  cos(th);
+
+    // Tangential velocity obtained from numerical fluid solution
+    const double ut =
+        u[j]*tx + v[j]*ty;
+
+    // No penetration
+    const double un = 0.0;
+
+    u[i] = un*nx + ut*tx;
+    v[i] = un*ny + ut*ty;
 }
 
 
@@ -998,146 +1012,982 @@ void applyRiemannBufferBoundary(
     }
 }
 
-// --------------------------------------------------
-// Validate cylinder pressure-force integration
-// using analytical inviscid potential flow
-// --------------------------------------------------
+// ------------------------------------------------------------
+// Potential-flow comparison
+//
+// Velocity comparison:
+//   layer 0 = cylinder boundary
+//   layer 1 = first fluid ring
+//   layer 2 = second fluid ring
+//
+// Force comparison:
+//   pressure + viscous + total force on cylinder boundary
+// ------------------------------------------------------------
+void PotentialFlowComparison(
+    double t,
+    int timestep,
 
-void validatePotentialFlowForce(
+    const vector<double>& r,
     const vector<double>& theta,
-    int Nboundary,
+    const vector<double>& x,
+    const vector<double>& y,
+
+    const vector<double>& u,
+    const vector<double>& v,
+    const vector<double>& pressure,
+
+    int NTheta,
+
     double r0,
     double dTheta,
     double rhoInf,
     double UInf,
     double Dcylinder,
-    const string& foldername)
+
+    ofstream& localFile,
+    ofstream& globalFile)
 {
-    double dynamicPressure =
+    const int Nlayers = 3;
+
+    const double dynamicPressure =
         0.5*rhoInf*UInf*UInf;
 
-    double forceReference =
+    const double forceReference =
         dynamicPressure*Dcylinder;
 
-    double Fx = 0.0;
-    double Fy = 0.0;
+    const double mu =
+        rhoInf*viscosity;
 
-    string filename =
-        foldername
-        + "/PotentialFlowValidation.csv";
 
-    ofstream file(filename);
+    // ========================================================
+    // Integrated SPH forces
+    // ========================================================
 
-    file
-        << "ID,theta,CpExact,pExact,"
-        << "nx,ny,ds,dFx,dFy"
-        << endl;
+    double FxPressureSPH = 0.0;
+    double FyPressureSPH = 0.0;
 
-    for (int i = 0;
-         i < Nboundary;
-         ++i)
+    double FxViscousSPH = 0.0;
+    double FyViscousSPH = 0.0;
+
+    double FxExact = 0.0;
+    double FyExact = 0.0;
+
+
+    // ========================================================
+    // Loop around cylinder
+    // ========================================================
+
+    for (int k = 0; k < NTheta; ++k)
     {
-        double th =
-            theta[i];
+        const int iBoundary = k;
 
-        // Outward normal from cylinder into fluid
-        double nx =
-            cos(th);
+        const double th =
+            theta[iBoundary];
 
-        double ny =
-            sin(th);
-
-        // Analytical potential-flow pressure coefficient
-        double beta =
+        const double beta =
             th - flowAngle;
 
-        double CpExact =
+        const double nx =
+            cos(th);
+
+        const double ny =
+            sin(th);
+
+        const double tx =
+            -sin(th);
+
+        const double ty =
+            cos(th);
+
+        const double ds =
+            r0*dTheta;
+
+
+        // ====================================================
+        // Analytical pressure
+        // ====================================================
+
+        const double CpExact =
             1.0
             - 4.0*sin(beta)*sin(beta);
 
-        // Gauge pressure: p_inf = 0
-        double pExact =
+        const double pExact =
             dynamicPressure*CpExact;
 
-        // Arc represented by this boundary particle
-        double ds =
-            r0*dTheta;
 
-        // Pressure force on cylinder
-        double dFx =
+        // ====================================================
+        // SPH pressure
+        // ====================================================
+
+        const double pSPH =
+            pressure[iBoundary];
+
+        const double CpSPH =
+            pSPH/dynamicPressure;
+
+
+        // ====================================================
+        // Pressure errors
+        // ====================================================
+
+        const double errorPressure =
+            pSPH - pExact;
+
+        const double errorCp =
+            CpSPH - CpExact;
+
+
+        // ====================================================
+        // Local pressure force
+        // ====================================================
+
+        const double dFxPressureSPH =
+            -pSPH*nx*ds;
+
+        const double dFyPressureSPH =
+            -pSPH*ny*ds;
+
+
+        const double dFxPressureExact =
             -pExact*nx*ds;
 
-        double dFy =
+        const double dFyPressureExact =
             -pExact*ny*ds;
 
-        Fx += dFx;
-        Fy += dFy;
 
-        file
-            << i << ","
-            << th << ","
-            << CpExact << ","
-            << pExact << ","
-            << nx << ","
-            << ny << ","
-            << ds << ","
-            << dFx << ","
-            << dFy
-            << endl;
+        // ====================================================
+        // Local viscous force
+        //
+        // Free-slip:
+        //
+        // tau = mu * (utFluid - utWall) / dr
+        //
+        // For ideal free-slip this should be approximately zero.
+        // ====================================================
+
+        const int j =
+            iBoundary + NTheta;
+
+        const double dr =
+            r[j] - r[iBoundary];
+
+
+        const double utWall =
+            u[iBoundary]*tx
+            + v[iBoundary]*ty;
+
+
+        const double utFluid =
+            u[j]*tx
+            + v[j]*ty;
+
+
+        /*const double tauWall =
+            mu*(utFluid - utWall)/dr;*/
+
+        const double tauWall =
+            0.0;
+
+
+        const double dFxViscousSPH =
+            tauWall*tx*ds;
+
+        const double dFyViscousSPH =
+            tauWall*ty*ds;
+
+
+        // ====================================================
+        // Local total force
+        // ====================================================
+
+        const double dFxSPH =
+            dFxPressureSPH
+            + dFxViscousSPH;
+
+        const double dFySPH =
+            dFyPressureSPH
+            + dFyViscousSPH;
+
+
+        // Potential flow has no viscous wall force
+
+        const double dFxExact =
+            dFxPressureExact;
+
+        const double dFyExact =
+            dFyPressureExact;
+
+
+        // ====================================================
+        // Local force magnitudes
+        // ====================================================
+
+        const double dFPressureSPH =
+            sqrt(
+                dFxPressureSPH*dFxPressureSPH
+                +
+                dFyPressureSPH*dFyPressureSPH
+            );
+
+
+        const double dFViscousSPH =
+            sqrt(
+                dFxViscousSPH*dFxViscousSPH
+                +
+                dFyViscousSPH*dFyViscousSPH
+            );
+
+
+        const double dFSPH =
+            sqrt(
+                dFxSPH*dFxSPH
+                +
+                dFySPH*dFySPH
+            );
+
+
+        const double dFExact =
+            sqrt(
+                dFxExact*dFxExact
+                +
+                dFyExact*dFyExact
+            );
+
+
+        // ====================================================
+        // Local force coefficients
+        // ====================================================
+
+        const double localForceReference =
+            dynamicPressure*ds;
+
+
+        const double CfxLocalSPH =
+            dFxSPH/localForceReference;
+
+        const double CfyLocalSPH =
+            dFySPH/localForceReference;
+
+        const double CFLocalSPH =
+            dFSPH/localForceReference;
+
+        const double CfxLocalExact =
+            dFxExact/localForceReference;
+
+        const double CfyLocalExact =
+            dFyExact/localForceReference;
+
+        const double CFLocalExact =
+            dFExact/localForceReference;
+
+
+        // ====================================================
+        // Local force errors
+        // ====================================================
+
+        const double errorFx =
+            dFxSPH - dFxExact;
+
+        const double errorFy =
+            dFySPH - dFyExact;
+
+
+        const double errorForceMagnitude =
+            dFSPH - dFExact;
+
+
+        const double absErrorForceMagnitude =
+            abs(errorForceMagnitude);
+
+
+        const double errorForceVector =
+            sqrt(
+                errorFx*errorFx
+                +
+                errorFy*errorFy
+            );
+
+
+        const double errorCfx =
+            CfxLocalSPH - CfxLocalExact;
+
+        const double errorCfy =
+            CfyLocalSPH - CfyLocalExact;
+
+        const double errorCF =
+            CFLocalSPH - CFLocalExact;
+
+
+        // ====================================================
+        // Accumulate global forces
+        // ====================================================
+
+        FxPressureSPH +=
+            dFxPressureSPH;
+
+        FyPressureSPH +=
+            dFyPressureSPH;
+
+
+        FxViscousSPH +=
+            dFxViscousSPH;
+
+        FyViscousSPH +=
+            dFyViscousSPH;
+
+
+        FxExact +=
+            dFxExact;
+
+        FyExact +=
+            dFyExact;
+
+
+        // ====================================================
+        // Velocity comparison
+        // boundary + first two fluid rings
+        // ====================================================
+
+        for (int layer = 0;
+             layer < Nlayers;
+             ++layer)
+        {
+            const int i =
+                layer*NTheta + k;
+
+
+            const double ri =
+                r[i];
+
+            const double thi =
+                theta[i];
+
+            const double ct =
+                cos(thi);
+
+            const double st =
+                sin(thi);
+
+            const double betai =
+                thi - flowAngle;
+
+
+            // ================================================
+            // Analytical potential-flow velocity
+            // ================================================
+
+            const double a2r2 =
+                (r0*r0)/(ri*ri);
+
+
+            const double urExact =
+                UInf
+                *(1.0 - a2r2)
+                *cos(betai);
+
+
+            const double utExact =
+                -UInf
+                *(1.0 + a2r2)
+                *sin(betai);
+
+
+            const double uExact =
+                urExact*ct
+                - utExact*st;
+
+
+            const double vExact =
+                urExact*st
+                + utExact*ct;
+
+
+            // ================================================
+            // SPH polar velocity
+            // ================================================
+
+            const double urSPH =
+                u[i]*ct
+                + v[i]*st;
+
+
+            const double utSPH =
+                -u[i]*st
+                + v[i]*ct;
+
+
+            // ================================================
+            // Velocity magnitude
+            // ================================================
+
+            const double velocitySPH =
+                sqrt(
+                    u[i]*u[i]
+                    +
+                    v[i]*v[i]
+                );
+
+
+            const double velocityExact =
+                sqrt(
+                    uExact*uExact
+                    +
+                    vExact*vExact
+                );
+
+
+            // ================================================
+            // Component errors
+            // ================================================
+
+            const double errorU =
+                u[i] - uExact;
+
+            const double errorV =
+                v[i] - vExact;
+
+            const double errorUr =
+                urSPH - urExact;
+
+            const double errorUt =
+                utSPH - utExact;
+
+
+            // ================================================
+            // Velocity magnitude error
+            // ================================================
+
+            const double errorVelocityMagnitude =
+                velocitySPH
+                - velocityExact;
+
+
+            const double absErrorVelocityMagnitude =
+                abs(errorVelocityMagnitude);
+
+
+            // ================================================
+            // Full vector velocity error
+            // ================================================
+
+            const double errorVelocityVector =
+                sqrt(
+                    errorU*errorU
+                    +
+                    errorV*errorV
+                );
+
+
+            const double errorVelocityVectorNormalized =
+                errorVelocityVector/UInf;
+
+
+            // ================================================
+            // Velocity coefficients
+            // ================================================
+
+            const double CuSPH =
+                u[i]/UInf;
+
+            const double CvSPH =
+                v[i]/UInf;
+
+            const double CurSPH =
+                urSPH/UInf;
+
+            const double CutSPH =
+                utSPH/UInf;
+
+            const double CVelocitySPH =
+                velocitySPH/UInf;
+
+
+            const double CuExact =
+                uExact/UInf;
+
+            const double CvExact =
+                vExact/UInf;
+
+            const double CurExact =
+                urExact/UInf;
+
+            const double CutExact =
+                utExact/UInf;
+
+            const double CVelocityExact =
+                velocityExact/UInf;
+
+
+            // ================================================
+            // Coefficient errors
+            // ================================================
+
+            const double errorCu =
+                CuSPH - CuExact;
+
+            const double errorCv =
+                CvSPH - CvExact;
+
+            const double errorCur =
+                CurSPH - CurExact;
+
+            const double errorCut =
+                CutSPH - CutExact;
+
+            const double errorCVelocity =
+                CVelocitySPH
+                - CVelocityExact;
+
+
+            string particleType;
+
+            if (layer == 0)
+            {
+                particleType =
+                    "boundary";
+            }
+            else
+            {
+                particleType =
+                    "fluid";
+            }
+
+
+            // ================================================
+            // Write velocity comparison
+            // ================================================
+
+            localFile
+                << t << ","
+                << timestep << ","
+
+                << k << ","
+                << layer << ","
+                << particleType << ","
+                << i << ","
+
+                << thi << ","
+                << thi*180.0/PI << ","
+
+                << ri << ","
+                << x[i] << ","
+                << y[i] << ","
+
+                // SPH velocity
+                << u[i] << ","
+                << v[i] << ","
+                << urSPH << ","
+                << utSPH << ","
+                << velocitySPH << ","
+
+                // Exact velocity
+                << uExact << ","
+                << vExact << ","
+                << urExact << ","
+                << utExact << ","
+                << velocityExact << ","
+
+                // Errors
+                << errorU << ","
+                << errorV << ","
+                << errorUr << ","
+                << errorUt << ","
+
+                << errorVelocityMagnitude << ","
+                << absErrorVelocityMagnitude << ","
+
+                << errorVelocityVector << ","
+                << errorVelocityVectorNormalized << ","
+
+                // Coefficients
+                << CuSPH << ","
+                << CvSPH << ","
+                << CurSPH << ","
+                << CutSPH << ","
+                << CVelocitySPH << ","
+
+                << CuExact << ","
+                << CvExact << ","
+                << CurExact << ","
+                << CutExact << ","
+                << CVelocityExact << ","
+
+                << errorCu << ","
+                << errorCv << ","
+                << errorCur << ","
+                << errorCut << ","
+                << errorCVelocity << ",";
+
+
+            // ================================================
+            // Pressure / force only for cylinder boundary
+            // ================================================
+
+            if (layer == 0)
+            {
+                localFile
+
+                    << pSPH << ","
+                    << pExact << ","
+
+                    << CpSPH << ","
+                    << CpExact << ","
+
+                    << errorPressure << ","
+                    << errorCp << ","
+
+                    << tauWall << ","
+
+                    // pressure force
+                    << dFxPressureSPH << ","
+                    << dFyPressureSPH << ","
+                    << dFPressureSPH << ","
+
+                    // viscous force
+                    << dFxViscousSPH << ","
+                    << dFyViscousSPH << ","
+                    << dFViscousSPH << ","
+
+                    // total SPH
+                    << dFxSPH << ","
+                    << dFySPH << ","
+                    << dFSPH << ","
+
+                    // exact
+                    << dFxExact << ","
+                    << dFyExact << ","
+                    << dFExact << ","
+
+                    // errors
+                    << errorFx << ","
+                    << errorFy << ","
+                    << errorForceMagnitude << ","
+                    << absErrorForceMagnitude << ","
+                    << errorForceVector << ","
+
+                    // coefficients
+                    << CfxLocalSPH << ","
+                    << CfyLocalSPH << ","
+                    << CFLocalSPH << ","
+
+                    << CfxLocalExact << ","
+                    << CfyLocalExact << ","
+                    << CFLocalExact << ","
+
+                    << errorCfx << ","
+                    << errorCfy << ","
+                    << errorCF;
+            }
+            else
+            {
+                // Keep the same number of columns for fluid layers
+                for (int column = 0; column < 32; ++column)
+                {
+                    localFile << ",";
+                }
+            }
+
+            localFile << endl;
+        }
     }
 
-    double CD =
-        Fx/forceReference;
 
-    double CL =
-        Fy/forceReference;
+    // ========================================================
+    // GLOBAL FORCE
+    // ========================================================
+
+    const double FxSPH =
+        FxPressureSPH
+        + FxViscousSPH;
+
+    const double FySPH =
+        FyPressureSPH
+        + FyViscousSPH;
 
 
-    file << endl;
+    // ========================================================
+    // Force magnitudes
+    // ========================================================
 
-    file
-        << "Fx" << ","
-        << Fx << endl;
+    const double FPressureSPH =
+        sqrt(
+            FxPressureSPH*FxPressureSPH
+            +
+            FyPressureSPH*FyPressureSPH
+        );
 
-    file
-        << "Fy" << ","
-        << Fy << endl;
 
-    file
-        << "CD" << ","
-        << CD << endl;
+    const double FViscousSPH =
+        sqrt(
+            FxViscousSPH*FxViscousSPH
+            +
+            FyViscousSPH*FyViscousSPH
+        );
 
-    file
-        << "CL" << ","
-        << CL << endl;
 
-    file.close();
+    const double FSPH =
+        sqrt(
+            FxSPH*FxSPH
+            +
+            FySPH*FySPH
+        );
 
-    cout << endl;
-    cout << "====================================" << endl;
-    cout << "Potential-flow force validation" << endl;
-    cout << "====================================" << endl;
 
-    cout << "Fx = "
-         << Fx << endl;
+    const double FExact =
+        sqrt(
+            FxExact*FxExact
+            +
+            FyExact*FyExact
+        );
 
-    cout << "Fy = "
-         << Fy << endl;
 
-    cout << "CD = "
-         << CD << endl;
+    // ========================================================
+    // Pressure coefficients
+    // ========================================================
 
-    cout << "CL = "
-         << CL << endl;
+    const double CDPressureSPH =
+        FxPressureSPH/forceReference;
 
-    cout << "Exact CD = 0" << endl;
-    cout << "Exact CL = 0" << endl;
+    const double CLPressureSPH =
+        FyPressureSPH/forceReference;
 
-    cout << "Validation file: "
-         << filename << endl;
+    const double CFPressureSPH =
+        FPressureSPH/forceReference;
 
-    cout << "===================================="
-         << endl;
+
+    // ========================================================
+    // Viscous coefficients
+    // ========================================================
+
+    const double CDViscousSPH =
+        FxViscousSPH/forceReference;
+
+    const double CLViscousSPH =
+        FyViscousSPH/forceReference;
+
+    const double CFViscousSPH =
+        FViscousSPH/forceReference;
+
+
+    // ========================================================
+    // Total SPH coefficients
+    // ========================================================
+
+    const double CDSPH =
+        FxSPH/forceReference;
+
+    const double CLSPH =
+        FySPH/forceReference;
+
+    const double CFSPH =
+        FSPH/forceReference;
+
+
+    // ========================================================
+    // Exact coefficients
+    // ========================================================
+
+    const double CDExact =
+        FxExact/forceReference;
+
+    const double CLExact =
+        FyExact/forceReference;
+
+    const double CFExact =
+        FExact/forceReference;
+
+
+    // ========================================================
+    // Global errors
+    // ========================================================
+
+    const double errorFx =
+        FxSPH - FxExact;
+
+    const double errorFy =
+        FySPH - FyExact;
+
+    const double errorF =
+        FSPH - FExact;
+
+
+    const double errorCD =
+        CDSPH - CDExact;
+
+    const double errorCL =
+        CLSPH - CLExact;
+
+    const double errorCF =
+        CFSPH - CFExact;
+
+
+    // ========================================================
+    // Write global CSV
+    // ========================================================
+
+    globalFile
+        << t << ","
+        << timestep << ","
+
+        // pressure
+        << FxPressureSPH << ","
+        << FyPressureSPH << ","
+        << FPressureSPH << ","
+
+        << CDPressureSPH << ","
+        << CLPressureSPH << ","
+        << CFPressureSPH << ","
+
+        // viscous
+        << FxViscousSPH << ","
+        << FyViscousSPH << ","
+        << FViscousSPH << ","
+
+        << CDViscousSPH << ","
+        << CLViscousSPH << ","
+        << CFViscousSPH << ","
+
+        // total SPH
+        << FxSPH << ","
+        << FySPH << ","
+        << FSPH << ","
+
+        << CDSPH << ","
+        << CLSPH << ","
+        << CFSPH << ","
+
+        // exact
+        << FxExact << ","
+        << FyExact << ","
+        << FExact << ","
+
+        << CDExact << ","
+        << CLExact << ","
+        << CFExact << ","
+
+        // error
+        << errorFx << ","
+        << errorFy << ","
+        << errorF << ","
+
+        << errorCD << ","
+        << errorCL << ","
+        << errorCF
+
+        << endl;
+}
+
+// ------------------------------------------------------------
+// Update interior support particles
+// Free-slip cylinder
+// ------------------------------------------------------------
+
+void updateCylinderSupport(
+    int NTheta,
+    int Nboundary,
+    int NsupportStart,
+    int NsupportLayers,
+
+    const vector<double>& theta,
+
+    vector<double>& u,
+    vector<double>& v,
+    vector<double>& rho)
+{
+    for (int layer = 1;
+         layer <= NsupportLayers;
+         ++layer)
+    {
+        for (int k = 0;
+             k < NTheta;
+             ++k)
+        {
+            int wall =
+                k;
+
+            int fluid =
+                Nboundary
+                + (layer - 1)*NTheta
+                + k;
+
+            int support =
+                NsupportStart
+                + (layer - 1)*NTheta
+                + k;
+
+
+            double th =
+                theta[wall];
+
+
+            // ----------------------------------------
+            // Local normal and tangential directions
+            // ----------------------------------------
+
+            double nx =
+                cos(th);
+
+            double ny =
+                sin(th);
+
+            double tx =
+                -sin(th);
+
+            double ty =
+                cos(th);
+
+
+            // ----------------------------------------
+            // Fluid velocity components
+            // ----------------------------------------
+
+            double unFluid =
+                u[fluid]*nx
+                + v[fluid]*ny;
+
+            double utFluid =
+                u[fluid]*tx
+                + v[fluid]*ty;
+
+
+            // ----------------------------------------
+            // Free-slip mirror condition
+            // ----------------------------------------
+
+            double unSupport =
+                -unFluid;
+
+            double utSupport =
+                utFluid;
+
+
+            // Convert back to Cartesian velocity
+            u[support] =
+                unSupport*nx
+                + utSupport*tx;
+
+            v[support] =
+                unSupport*ny
+                + utSupport*ty;
+
+
+            // ----------------------------------------
+            // Density continuation through wall
+            // ----------------------------------------
+
+            rho[support] =
+                2.0*rho[wall]
+                - rho[fluid];
+
+
+            // Numerical safety
+            rho[support] =
+                max(
+                    rho[support],
+                    1.0e-6*rho0
+                );
+        }
+    }
 }
 
 
@@ -1313,15 +2163,20 @@ int main()
     // ------------------------------------------------------------
     // Generate particles
     // ------------------------------------------------------------
-    // ------------------------------------------------------------
-    // Boundary particles
-    // ------------------------------------------------------------
 
     int i = 0;
+
+
+    // ============================================================
+    // 1. Physical cylinder wall
+    // ============================================================
+
     double rp = r0;
-    for (int j = 0; j < NTheta; ++j)
+
+    for (int k = 0; k < NTheta; ++k)
     {
-        double thetap = j*dTheta0;
+        double thetap = k*dTheta0;
+
         double xp = rp*cos(thetap);
         double yp = rp*sin(thetap);
 
@@ -1330,7 +2185,6 @@ int main()
 
         x.push_back(xp);
         y.push_back(yp);
-
 
         cout << "ID: " << i
             << "  Type: Boundary"
@@ -1341,33 +2195,37 @@ int main()
             << endl;
 
         i++;
-
     }
 
     int Nboundary = i;
 
-    // ------------------------------------------------------------
-    // Fluid particles
-    // ------------------------------------------------------------
-    
-    
+
+    // ============================================================
+    // 2. Fluid + outer buffer rings
+    // ============================================================
+
     for (int ir = 1; ir <= NrTotal; ++ir)
     {
-        double rp = Bpolar*(pow(qA,ir)-1)+r0;
+        double rp =
+            Bpolar*(pow(qA,ir)-1.0)
+            + r0;
 
-        for (int j = 0; j < NTheta; ++j)
+        for (int k = 0; k < NTheta; ++k)
         {
-            double thetap = j*dTheta0;
-            double xp = rp*cos(thetap);
-            double yp = rp*sin(thetap);
+            double thetap =
+                k*dTheta0;
+
+            double xp =
+                rp*cos(thetap);
+
+            double yp =
+                rp*sin(thetap);
 
             r.push_back(rp);
             theta.push_back(thetap);
 
             x.push_back(xp);
             y.push_back(yp);
-
-            
 
             cout << "ID: " << i
                 << "  Type: "
@@ -1378,26 +2236,127 @@ int main()
                 << "  y: " << yp
                 << endl;
 
-        i++;
-
+            i++;
         }
-
     }
 
-    int Nparticles = i;
-    int NfluidEnd = (Nr + 1)*NTheta;
-    int Nfluid = NfluidEnd - Nboundary;
-    int NbufferParticles = Nparticles - NfluidEnd;
+
+    // ============================================================
+    // Fluid / buffer bookkeeping
+    // ============================================================
+
+    int NfluidEnd =
+        (Nr + 1)*NTheta;
+
+    int Nfluid =
+        NfluidEnd - Nboundary;
+
+    int NbaseParticles =
+        i;
+
+    int NbufferParticles =
+        NbaseParticles - NfluidEnd;
+
+
+    // ============================================================
+    // 3. Interior support rings
+    // ============================================================
+
+    int NsupportStart =
+        i;
+
+    for (int layer = 1;
+        layer <= NsupportLayers;
+        ++layer)
+    {
+        int fluidRingStart =
+            Nboundary
+            + (layer - 1)*NTheta;
+
+        double rpSupport =
+            2.0*r0
+            - r[fluidRingStart];
+
+        if (rpSupport <= 0.0)
+        {
+            throw runtime_error(
+                "NsupportLayers too large: "
+                "support ring reaches r <= 0."
+            );
+        }
+
+        for (int k = 0;
+            k < NTheta;
+            ++k)
+        {
+            double thetap =
+                k*dTheta0;
+
+            double xp =
+                rpSupport*cos(thetap);
+
+            double yp =
+                rpSupport*sin(thetap);
+
+            r.push_back(rpSupport);
+            theta.push_back(thetap);
+
+            x.push_back(xp);
+            y.push_back(yp);
+
+            cout << "ID: " << i
+                << "  Type: Support"
+                << "  Layer: " << layer
+                << "  r: " << rpSupport
+                << "  theta: " << thetap
+                << "  x: " << xp
+                << "  y: " << yp
+                << endl;
+
+            i++;
+        }
+    }
+
+
+    // ============================================================
+    // Final particle counts
+    // ============================================================
+
+    int NsupportParticles =
+        i - NsupportStart;
+
+    int Nparticles =
+        i;
+
 
     cout << endl;
-    cout << "Ntheta     = " << NTheta << endl;
-    cout << "Nboundary  = " << Nboundary << endl;
-    cout << "Nfluid     = " << Nfluid << endl;
-    cout << "Nbufferparticles  = " << NbufferParticles << endl;
-    cout << "Nparticles = " << Nparticles << endl;
+
+    cout << "NTheta            = "
+        << NTheta << endl;
+
+    cout << "Nboundary         = "
+        << Nboundary << endl;
+
+    cout << "Nfluid            = "
+        << Nfluid << endl;
+
+    cout << "NbufferParticles  = "
+        << NbufferParticles << endl;
+
+    cout << "NsupportLayers    = "
+        << NsupportLayers << endl;
+
+    cout << "NsupportParticles = "
+        << NsupportParticles << endl;
+
+    cout << "NsupportStart     = "
+        << NsupportStart << endl;
+
+    cout << "Nparticles        = "
+        << Nparticles << endl;
 
 
-    vector<double> hlist = {2};
+    vector<double> hlist = {2.0};
     int Nh = hlist.size();
 
     // ------------------------------------------------------------
@@ -1448,7 +2407,19 @@ int main()
         constantsFile << "NfluidEnd," << NfluidEnd << endl;
         constantsFile << "Nfluid," << Nfluid << endl;
         constantsFile << "NbufferParticles," << NbufferParticles << endl;
-        constantsFile << "Nparticles," << Nparticles << endl;
+        constantsFile << "Nparticles," << NsupportStart << endl;
+        
+        constantsFile << "NparticlesSolver,"
+              << Nparticles << endl;
+
+        constantsFile << "NsupportLayers,"
+                    << NsupportLayers << endl;
+
+        constantsFile << "NsupportParticles,"
+                    << NsupportParticles << endl;
+
+        constantsFile << "NsupportStart,"
+                    << NsupportStart << endl;
 
         // Derived metadata for MATLAB post-processing only
         constantsFile << "hasCylinder," << (Nboundary > 0 ? 1 : 0) << endl;
@@ -1580,7 +2551,7 @@ int main()
         }*/
         
         //Slip Initial Conditions
-        for (int i = 0; i < Nparticles; ++i)
+        for (int i = 0; i < NsupportStart; ++i)
         {
             double ri = r[i];
             double th = theta[i];
@@ -1626,6 +2597,19 @@ int main()
 
             drhodtexact[i] = 0.0;
             pressureexact[i] = pInitial;
+        }
+
+        for (int i = NsupportStart;
+            i < Nparticles;
+            ++i)
+        {
+            u[i] = 0.0;
+            v[i] = 0.0;
+
+            rho[i] = rho0;
+
+            drhodtexact[i] = 0.0;
+            pressureexact[i] = 0.0;
         }
 
 
@@ -1675,6 +2659,16 @@ int main()
         {
             applyCylinderFreeSlip(i, NTheta, theta, u, v);
         }
+
+        updateCylinderSupport(
+            NTheta,
+            Nboundary,
+            NsupportStart,
+            NsupportLayers,
+            theta,
+            u,
+            v,
+            rho);
             
 
 
@@ -1683,7 +2677,7 @@ int main()
 // Calculate Vi, mass and h for ALL particles
 // ----------------------------------------------
 
-        for (int i = 0; i < Nparticles; i++)
+        for (int i = 0; i < NsupportStart; i++)
         {
             int ir = i/NTheta;
 
@@ -1737,6 +2731,40 @@ int main()
 
             hp[i] =
                 coefh*dpi;
+        }
+
+        // --------------------------------------------------
+        // Support-particle volume and smoothing length
+        // --------------------------------------------------
+
+        for (int layer = 1;
+            layer <= NsupportLayers;
+            ++layer)
+        {
+            for (int k = 0;
+                k < NTheta;
+                ++k)
+            {
+                int fluid =
+                    Nboundary
+                    + (layer - 1)*NTheta
+                    + k;
+
+                int support =
+                    NsupportStart
+                    + (layer - 1)*NTheta
+                    + k;
+
+                Vi[support] =
+                    Vi[fluid];
+
+                hp[support] =
+                    hp[fluid];
+
+                mass[support] =
+                    rho[support]
+                    * Vi[support];
+            }
         }
 
 
@@ -1888,9 +2916,13 @@ int main()
             {
                 Type = "fluid";
             }
-            else
+            else if (i < NsupportStart)
             {
                 Type = "buffer";
+            }
+            else
+            {
+                Type = "support";
             }
 
             file << i << ","
@@ -1929,15 +2961,7 @@ int main()
             << filename
             << endl;
 
-        validatePotentialFlowForce(
-            theta,
-            Nboundary,
-            r0,
-            dTheta0,
-            rho0,
-            inletVelocity,
-            Dcylinder,
-            foldername);
+        
         
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -1948,19 +2972,190 @@ int main()
         int n = 0;
         double nextOutputTime = 0.0;
 
-        ofstream forceFile(
+        // ============================================================
+        // Potential-flow LOCAL comparison
+        // ============================================================
+
+        ofstream potentialFlowLocalFile(
             foldername
-            + "/CylinderForces_hdp_"
+            + "/PotentialFlowLocalComparison_hdp_"
             + to_string(coefh)
             + ".csv");
 
-        forceFile
+        potentialFlowLocalFile
+            << setprecision(17);
+
+
+        potentialFlowLocalFile
             << "t,"
-            << "FxPressure,FyPressure,"
-            << "FxViscous,FyViscous,"
-            << "Fx,Fy,"
-            << "CD,CL"
+            << "timestep,"
+
+            << "thetaIndex,"
+            << "layer,"
+            << "type,"
+            << "particleID,"
+
+            << "thetaRad,"
+            << "thetaDeg,"
+            << "r,"
+            << "x,"
+            << "y,"
+
+            // velocity SPH
+            << "uSPH,"
+            << "vSPH,"
+            << "urSPH,"
+            << "utSPH,"
+            << "velocitySPH,"
+
+            // velocity exact
+            << "uExact,"
+            << "vExact,"
+            << "urExact,"
+            << "utExact,"
+            << "velocityExact,"
+
+            // velocity error
+            << "errorU,"
+            << "errorV,"
+            << "errorUr,"
+            << "errorUt,"
+            << "errorVelocityMagnitude,"
+            << "absErrorVelocityMagnitude,"
+            << "errorVelocityVector,"
+            << "errorVelocityVectorNormalized,"
+
+            // velocity coefficients
+            << "CuSPH,"
+            << "CvSPH,"
+            << "CurSPH,"
+            << "CutSPH,"
+            << "CVelocitySPH,"
+
+            << "CuExact,"
+            << "CvExact,"
+            << "CurExact,"
+            << "CutExact,"
+            << "CVelocityExact,"
+
+            << "errorCu,"
+            << "errorCv,"
+            << "errorCur,"
+            << "errorCut,"
+            << "errorCVelocity,"
+
+            // pressure
+            << "pSPH,"
+            << "pExact,"
+            << "CpSPH,"
+            << "CpExact,"
+            << "errorPressure,"
+            << "errorCp,"
+
+            // wall shear
+            << "tauWall,"
+
+            // pressure force
+            << "dFxPressureSPH,"
+            << "dFyPressureSPH,"
+            << "dFPressureSPH,"
+
+            // viscous force
+            << "dFxViscousSPH,"
+            << "dFyViscousSPH,"
+            << "dFViscousSPH,"
+
+            // total SPH force
+            << "dFxSPH,"
+            << "dFySPH,"
+            << "dFSPH,"
+
+            // exact force
+            << "dFxExact,"
+            << "dFyExact,"
+            << "dFExact,"
+
+            // force errors
+            << "errorFx,"
+            << "errorFy,"
+            << "errorForceMagnitude,"
+            << "absErrorForceMagnitude,"
+            << "errorForceVector,"
+
+            // force coefficients
+            << "CfxLocalSPH,"
+            << "CfyLocalSPH,"
+            << "CFLocalSPH,"
+
+            << "CfxLocalExact,"
+            << "CfyLocalExact,"
+            << "CFLocalExact,"
+
+            << "errorCfx,"
+            << "errorCfy,"
+            << "errorCF"
+
             << endl;
+
+            // ============================================================
+            // Potential-flow GLOBAL comparison
+            // ============================================================
+
+            ofstream potentialFlowGlobalFile(
+                foldername
+                + "/PotentialFlowGlobalComparison_hdp_"
+                + to_string(coefh)
+                + ".csv");
+
+            potentialFlowGlobalFile
+                << setprecision(17);
+
+
+            potentialFlowGlobalFile
+                << "t,"
+                << "timestep,"
+
+                // pressure contribution
+                << "FxPressureSPH,"
+                << "FyPressureSPH,"
+                << "FPressureSPH,"
+                << "CDPressureSPH,"
+                << "CLPressureSPH,"
+                << "CFPressureSPH,"
+
+                // viscous contribution
+                << "FxViscousSPH,"
+                << "FyViscousSPH,"
+                << "FViscousSPH,"
+                << "CDViscousSPH,"
+                << "CLViscousSPH,"
+                << "CFViscousSPH,"
+
+                // total SPH
+                << "FxSPH,"
+                << "FySPH,"
+                << "FSPH,"
+                << "CDSPH,"
+                << "CLSPH,"
+                << "CFSPH,"
+
+                // exact
+                << "FxExact,"
+                << "FyExact,"
+                << "FExact,"
+                << "CDExact,"
+                << "CLExact,"
+                << "CFExact,"
+
+                // errors
+                << "errorFx,"
+                << "errorFy,"
+                << "errorF,"
+                << "errorCD,"
+                << "errorCL,"
+                << "errorCF"
+
+                << endl;
 
         while (t < Totaltime)
         {
@@ -2022,6 +3217,16 @@ int main()
                 NrTotal,
                 kernel);
 
+            updateCylinderSupport(
+                NTheta,
+                Nboundary,
+                NsupportStart,
+                NsupportLayers,
+                theta,
+                u,
+                v,
+                rho);
+
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Pressure and Force at n
@@ -2032,80 +3237,29 @@ int main()
                 pressure[i] = B*(pow(rho[i]/rho0,gammaEOS)-1.0);                         
             }
 
+            PotentialFlowComparison(
+                t,
+                n,
 
-            double FxPressure = 0.0;
-            double FyPressure = 0.0;
+                r,
+                theta,
+                x,
+                y,
 
-            double FxViscous = 0.0;
-            double FyViscous = 0.0;
+                u,
+                v,
+                pressure,
 
-            // Dynamic viscosity
-            double mu = rho0*viscosity;
+                NTheta,
 
-            for (int i = 0; i < Nboundary; ++i)
-            {
-                double nx = cos(theta[i]);
-                double ny = sin(theta[i]);
+                r0,
+                dTheta0,
+                rho0,
+                inletVelocity,
+                Dcylinder,
 
-                double tx = -ny;
-                double ty =  nx;
-
-                // Arc length represented by boundary particle
-                double ds = r0*dTheta0;
-
-                // -----------------------------------------
-                // Pressure force
-                // -----------------------------------------
-
-                FxPressure +=
-                    -pressure[i]*nx*ds;
-
-                FyPressure +=
-                    -pressure[i]*ny*ds;
-
-
-                // -----------------------------------------
-                // Approximate viscous wall shear
-                // using first physical-fluid ring
-                // -----------------------------------------
-
-                int j = i + NTheta;
-
-                double dr =
-                    r[j] - r[i];
-
-                double utFluid =
-                    u[j]*tx
-                    + v[j]*ty;
-
-                // Stationary cylinder: ut_wall = 0
-                /*double tauWall =
-                    mu*utFluid/dr;
-
-                FxViscous +=
-                    tauWall*tx*ds;
-
-                FyViscous +=
-                    tauWall*ty*ds;*/
-            }
-
-            double Fx = FxPressure + FxViscous;
-            double Fy = FyPressure + FyViscous;
-            double forceReference = 0.5 * rho0 * inletVelocity * inletVelocity * Dcylinder;
-            double CD = Fx/forceReference;
-            double CL = Fy/forceReference;
-
-            forceFile
-                << t << ","
-                << FxPressure << ","
-                << FyPressure << ","
-                << FxViscous << ","
-                << FyViscous << ","
-                << Fx << ","
-                << Fy << ","
-                << CD << ","
-                << CL
-                << endl;
+                potentialFlowLocalFile,
+                potentialFlowGlobalFile);
 
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -2378,67 +3532,7 @@ int main()
             double L2norm_velocity = sqrt(L2velocity/Nfluid);
 
 
-            /*// -----------------------------------------------------------------------------------------------------------------------------
-            // Compute L2 errors for uniform non-orthogonal flow
-            // -----------------------------------------------------------------------------------------------------------------------------
 
-            double L2rho = 0.0;
-            double L2u = 0.0;
-            double L2v = 0.0;
-            double L2velocity = 0.0;
-
-            for (int i = Nboundary; i < NfluidEnd; ++i)
-            {
-                // Density error
-                double erho =
-                    (rho[i] - rho0)/rho0;
-
-                // Velocity component errors
-                double eu =
-                    (u[i] - inletVelocityX)/inletVelocity;
-
-                double ev =
-                    (v[i] - inletVelocityY)/inletVelocity;
-
-                // Ferrand-style vector velocity error
-                double evel2 =
-                    (
-                        (u[i] - inletVelocityX)
-                        *(u[i] - inletVelocityX)
-
-                        +
-
-                        (v[i] - inletVelocityY)
-                        *(v[i] - inletVelocityY)
-                    )
-                    /(inletVelocity*inletVelocity);
-
-
-                L2rho +=
-                    erho*erho;
-
-                L2u +=
-                    eu*eu;
-
-                L2v +=
-                    ev*ev;
-
-                L2velocity +=
-                    evel2;
-            }
-
-            double L2norm_rho =
-                sqrt(L2rho/Nfluid);
-
-            double L2norm_u =
-                sqrt(L2u/Nfluid);
-
-            double L2norm_v =
-                sqrt(L2v/Nfluid);
-
-            double L2norm_velocity =
-                sqrt(L2velocity/Nfluid);
-            */
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Write output
@@ -2455,22 +3549,22 @@ int main()
                 file << endl;
                 file << "t" << "," << t << endl;
                 file << "ID"<< ","<< "x"<< "," << "y" << ","<< ","<<"rho"<< "," << "drhodt" << "," << "pressure"<< "," << "," << "u" << "," << "v" << "," << "velocity" << "," << "," << "dudt" << "," << "dvdt" <<","<< "vorticity" <<"," << "type" << endl;
-                for (int i = 0; i < Nparticles; i++)
+                for (int i = 0; i < NsupportStart; ++i)
+                {
+                    if (i < Nboundary)
                     {
-                        if (i < Nboundary)
-                        {
-                            type = "boundary";
-                        }
-                        else if (i < NfluidEnd)
-                        {
-                            type = "fluid";
-                        }
-                        else
-                        {
-                            type = "buffer";
-                        }
-                        file << i << "," << x[i] << "," << y[i] << "," << "," << rho[i] << "," << drhodt[i] << "," << pressure[i] << "," << "," << u[i] << "," << v[i] << "," << sqrt(u[i]*u[i] + v[i]*v[i]) << "," << "," << dudt[i] << "," << dvdt[i] << ","<< ((i >= Nboundary && i < NfluidEnd)? vorticity[i]: 0.0) << "," << type << endl;
+                        type = "boundary";
                     }
+                    else if (i < NfluidEnd)
+                    {
+                        type = "fluid";
+                    }
+                    else
+                    {
+                        type = "buffer";
+                    }
+                        file << i << "," << x[i] << "," << y[i] << "," << "," << rho[i] << "," << drhodt[i] << "," << pressure[i] << "," << "," << u[i] << "," << v[i] << "," << sqrt(u[i]*u[i] + v[i]*v[i]) << "," << "," << dudt[i] << "," << dvdt[i] << ","<< ((i >= Nboundary && i < NfluidEnd)? vorticity[i]: 0.0) << "," << type << endl;
+                }
            
                 file.close();
                 
@@ -2562,6 +3656,16 @@ int main()
                 Nr,
                 NrTotal,
                 kernel);
+
+            updateCylinderSupport(
+                NTheta,
+                Nboundary,
+                NsupportStart,
+                NsupportLayers,
+                theta,
+                uhalf,
+                vhalf,
+                rhohalf);
 
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -2680,6 +3784,16 @@ int main()
                 NrTotal,
                 kernel);
 
+            updateCylinderSupport(
+                NTheta,
+                Nboundary,
+                NsupportStart,
+                NsupportLayers,
+                theta,
+                uhalf,
+                vhalf,
+                rhohalf);
+
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Time integration to n+1
@@ -2762,6 +3876,16 @@ int main()
                 NrTotal,
                 kernel);
 
+            updateCylinderSupport(
+                NTheta,
+                Nboundary,
+                NsupportStart,
+                NsupportLayers,
+                theta,
+                unew,
+                vnew,
+                rhonew);
+
 
 
 
@@ -2788,7 +3912,8 @@ int main()
         
         }
         
-        forceFile.close();
+        potentialFlowLocalFile.close();
+        potentialFlowGlobalFile.close();
 
 
     }

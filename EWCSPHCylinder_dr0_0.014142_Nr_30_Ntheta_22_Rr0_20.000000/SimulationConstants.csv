@@ -14,9 +14,9 @@ flowAngleRad,0
 flowAngleDeg,0
 inletVelocityX,0.10000000000000001
 inletVelocityY,0
-c0,31.32091952673165
+c0,4
 gammaEOS,7
-B,140142.85714285713
+B,2285.7142857142858
 viscosity,0.0001
 tvis,1
 Dcylinder,0.10000000000000001
