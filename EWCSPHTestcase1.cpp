@@ -19,7 +19,7 @@ using namespace std;
 const double dtMax = 0.001;
 const double dtMin = 1.0e-10;
 const double CFL = 0.3;
-const double Totaltime = 10.0;
+const double Totaltime = 5.0;
 
 // ------------------------------------------------------------
 // Geometry
@@ -52,12 +52,12 @@ const double inletVelocityY =
 
 //const double c0 = 10.0*sqrt(g*(waterheight));
 
-const double c0 = 40.0*inletVelocity;
+const double c0 = 20.0*inletVelocity;
 
 const double gammaEOS = 7.0;
 const double B = c0*c0*rho0/gammaEOS;
 
-const double viscosity = 1.0e-4;
+const double viscosity = 1.0e-5;
 const double tvis = 1.0;
 const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder;
@@ -66,16 +66,21 @@ const double R = 10*Dcylinder;
 //const double dr0 = sqrt(2.0*viscosity*tvis);
 const double dr0 = Dcylinder/10.0;
 //double drhodtexact = -100;
-const double alphaAV = 0.01;
-const double deltadifussion = 0.05;
+const double alphaAV = 0.0;
+const double deltadifussion = 0.0;
 
 
-const int NsupportLayers = 2;
+const int NsupportLayers = 3;
 const int Nr = 50;
 const int Nbuffer = 8;      // open-boundary buffer rings
 int NrTotal = Nr + Nbuffer;
 
 //double Reynolds = inletVelocity*Dcylinder/viscosity;
+
+
+// Bonet--Lok correction for first derivatives (continuity/advection/vorticity).
+
+const bool useGradientCorrection = true;
 
 
 
@@ -341,6 +346,9 @@ double calculateDt(int Nboundary,
         
     }
 
+struct GradientCorrection {
+    double xx=1.0, xy=0.0, yx=0.0, yy=1.0;
+};
 
 // --------------------------------------------------
 // Compute the interaction between particle i and j
@@ -358,6 +366,7 @@ void accumulateInteraction(
     double mj,
     double h,
     const string& kernel,
+    const GradientCorrection& L,
     double& drhoAcc,
     double& duAcc,
     double& dvAcc)
@@ -411,13 +420,29 @@ void accumulateInteraction(
             -alphaAV*c0*muij/rhoij;
     }
 
+    double gradX = result.dWeightX;
+    double gradY = result.dWeightY;
+
+    if (useGradientCorrection) {
+        gradX = L.xx*result.dWeightX + L.xy*result.dWeightY;
+        gradY = L.yx*result.dWeightX + L.yy*result.dWeightY;
+    }
+
     double velocityDotGradient =
+    us[i]*gradX
+    + vs[i]*gradY;
+
+    double relativeVelocityDotGradient =
+        du*gradX
+        + dv*gradY;
+
+    /*double velocityDotGradient =
     us[i]*result.dWeightX
     + vs[i]*result.dWeightY;
 
     double relativeVelocityDotGradient =
         du*result.dWeightX
-        + dv*result.dWeightY;
+        + dv*result.dWeightY;*/
 
     double diffusion =
         2.0*deltadifussion*h*c0*Vj
@@ -2139,7 +2164,7 @@ int main()
         cin>>kernel;
 
     string foldername = 
-                "EWCSPHCylinder_dr0_" + to_string(dr0) + "_Nr_" + to_string(Nr) + "_Ntheta_" + to_string(NTheta) + "_Rr0_" + to_string(R/r0); 
+                "EWCSPHCylinder_dr0_" + to_string(dr0) + "_Nr_" + to_string(Nr) + "_Ntheta_" + to_string(NTheta) + "_Rr0_" + to_string(R/r0)+ "_AV_"+ to_string(alphaAV)+"_difussion_"+ to_string(deltadifussion)+"_visc_"+ to_string(viscosity); 
             //system(("mkdir -p " + foldername).c_str());
             filesystem::create_directories(foldername);
 
@@ -2525,6 +2550,8 @@ int main()
 
         vorticity.resize(Nparticles);
 
+        vector<GradientCorrection> gradientCorrections(Nparticles);
+
 
 
 // --------------------------------------------------
@@ -2764,6 +2791,59 @@ int main()
                 mass[support] =
                     rho[support]
                     * Vi[support];
+            }
+        }
+
+        if (useGradientCorrection)
+        {
+            for (int i = Nboundary; i < NfluidEnd; ++i)
+            {
+                double a = 0.0, b = 0.0;
+                double c = 0.0, d = 0.0;
+
+                for (int j = 0; j < Nparticles; ++j)
+                {
+                    double rx = x[i] - x[j];
+                    double ry = y[i] - y[j];
+                    double r2 = rx*rx + ry*ry;
+
+                    if (r2 < 1.0e-14)
+                        continue;
+
+                    double distance = sqrt(r2);
+                    double q = distance/hp[i];
+
+                    KernelResult k;
+
+                    if (kernel == "gaussian")
+                        k = gaussian(q, hp[i], rx/distance, ry/distance);
+                    else if (kernel == "cubic")
+                        k = cubicSpline(q, hp[i], rx/distance, ry/distance);
+                    else if (kernel == "wendland")
+                        k = Wendland(q, hp[i], rx/distance, ry/distance);
+                    else
+                        continue;
+
+                    a -= Vi[j]*k.dWeightX*rx;
+                    b -= Vi[j]*k.dWeightX*ry;
+                    c -= Vi[j]*k.dWeightY*rx;
+                    d -= Vi[j]*k.dWeightY*ry;
+                }
+
+                double det = a*d - b*c;
+                double scale = fmax(abs(a) + abs(b), abs(c) + abs(d));
+                double adjScale = fmax(abs(d) + abs(b), abs(c) + abs(a));
+
+                // Keep identity if the matrix cannot be safely inverted.
+                if (isfinite(det) && scale > 0.0 &&
+                    abs(det) > 1.0e-12*scale*scale &&
+                    scale*adjScale < 1.0e8*abs(det))
+                {
+                    gradientCorrections[i] = {
+                        d/det, -b/det,
+                        -c/det, a/det
+                    };
+                }
             }
         }
 
@@ -3335,6 +3415,20 @@ int main()
                         result =
                             Wendland(q,hp[i],dirX,dirY);
 
+
+                    if (useGradientCorrection) 
+                    {
+                        const auto& L = gradientCorrections[i];
+
+                        double gx = L.xx*result.dWeightX
+                                + L.xy*result.dWeightY;
+                        double gy = L.yx*result.dWeightX
+                                + L.yy*result.dWeightY;
+
+                        result.dWeightX = gx;
+                        result.dWeightY = gy;
+                    }
+
                     double du =
                         u[j]-u[i];
 
@@ -3370,7 +3464,7 @@ int main()
                     accumulateInteraction(
                         i, j,
                         x, y, u, v, rho, pressure,
-                        Vi[j], mass[j], hp[i], kernel,
+                        Vi[j], mass[j], hp[i], kernel, gradientCorrections[i],
                         drhodt[i], dudt[i], dvdt[i]);
                     
                 }
@@ -3697,7 +3791,7 @@ int main()
                         xhalf, yhalf,
                         uhalf, vhalf,
                         rhohalf, pressurehalf,
-                        Vi[j], mass[j], hp[i], kernel,
+                        Vi[j], mass[j], hp[i], kernel, gradientCorrections[i],
                         drhodthalf[i], dudthalf[i], dvdthalf[i]);
                     
                 }
