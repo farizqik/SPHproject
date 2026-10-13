@@ -17,7 +17,7 @@ using namespace std;
 // --------------------------------------------
 
 const double dtMax = 0.001;
-const double dtMin = 1.0e-10;
+const double dtMin = 1.0e-6;
 const double CFL = 0.3;
 const double Totaltime = 5.0;
 
@@ -25,7 +25,7 @@ const double Totaltime = 5.0;
 // Geometry
 // ------------------------------------------------------------
 
-const double waterheight = 1.0;
+//const double waterheight = 1.0;
 
 
 // ------------------------------------------------------------
@@ -57,21 +57,21 @@ const double c0 = 20.0*inletVelocity;
 const double gammaEOS = 7.0;
 const double B = c0*c0*rho0/gammaEOS;
 
-const double viscosity = 1.0e-5;
-const double tvis = 1.0;
+const double viscosity = 1.0e-4;
+const double tvis = dtMin;
 const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder;
 const double R = 10*Dcylinder;
 
-//const double dr0 = sqrt(2.0*viscosity*tvis);
-const double dr0 = Dcylinder/10.0;
+const double dr0 = sqrt(2.0*viscosity*tvis);
+//const double dr0 = Dcylinder/10.0;
 //double drhodtexact = -100;
 const double alphaAV = 0.0;
 const double deltadifussion = 0.0;
 
 
 const int NsupportLayers = 3;
-const int Nr = 50;
+const int Nr = 100;
 const int Nbuffer = 8;      // open-boundary buffer rings
 int NrTotal = Nr + Nbuffer;
 
@@ -516,67 +516,6 @@ double radialSum(double qA, int N)
 
 
 
-// --------------------------------------------------
-// Stationary free-slip cylinder: u_n = 0 and du_t/dn ~ 0.
-// -------------------------------------------------
-
-
-void applyCylinderFreeSlip(
-    int i, int NTheta,
-    const vector<double>& theta,
-    vector<double>& u,
-    vector<double>& v)
-{
-    const int j = i + NTheta;
-
-    const double th = theta[i];
-
-    const double nx = cos(th);
-    const double ny = sin(th);
-
-    const double tx = -sin(th);
-    const double ty =  cos(th);
-
-    // Tangential velocity obtained from numerical fluid solution
-    const double ut =
-        u[j]*tx + v[j]*ty;
-
-    // No penetration
-    const double un = 0.0;
-
-    u[i] = un*nx + ut*tx;
-    v[i] = un*ny + ut*ty;
-}
-
-
-
-/*void applyCylinderFreeSlip(
-    int i, int NTheta,
-    const vector<double>& theta,
-    vector<double>& u,
-    vector<double>& v)
-{
-    const double th = theta[i];
-
-    const double nx = cos(th);
-    const double ny = sin(th);
-
-    const double tx = -sin(th);
-    const double ty =  cos(th);
-
-    const double un = 0.0;
-
-    const double ut =
-        -2.0*inletVelocity*sin(th);
-
-    u[i] =
-        un*nx
-        + ut*tx;
-
-    v[i] =
-        un*ny
-        + ut*ty;
-}*/
 
 
 // --------------------------------------------------
@@ -820,6 +759,72 @@ void interpolateMDBC(
         max(rhoBoundaryOut,
             1.0e-6*rho0);
 }
+
+
+
+// --------------------------------------------------
+// Stationary free-slip cylinder: u_n = 0 and du_t/dn ~ 0.
+// -------------------------------------------------
+
+
+void applyCylinderFreeSlip(
+    int i, int NTheta,
+    const vector<double>& theta,
+    vector<double>& u,
+    vector<double>& v)
+{
+    const int j = i + NTheta;
+
+    const double th = theta[i];
+
+    const double nx = cos(th);
+    const double ny = sin(th);
+
+    const double tx = -sin(th);
+    const double ty =  cos(th);
+
+    // Tangential velocity obtained from numerical fluid solution
+    const double ut =
+        u[j]*tx + v[j]*ty;
+
+    // No penetration
+    const double un = 0.0;
+
+    u[i] = un*nx + ut*tx;
+    v[i] = un*ny + ut*ty;
+}
+
+
+
+/*void applyCylinderFreeSlip(
+    int i, int NTheta,
+    const vector<double>& theta,
+    vector<double>& u,
+    vector<double>& v)
+{
+    const double th = theta[i];
+
+    const double nx = cos(th);
+    const double ny = sin(th);
+
+    const double tx = -sin(th);
+    const double ty =  cos(th);
+
+    const double un = 0.0;
+
+    const double ut =
+        -2.0*inletVelocity*sin(th);
+
+    u[i] =
+        un*nx
+        + ut*tx;
+
+    v[i] =
+        un*ny
+        + ut*ty;
+}*/
+
+
 // ------------------------------------------------------------
 // Riemann Invariants
 // ------------------------------------------------------------
@@ -1034,6 +1039,119 @@ void applyRiemannBufferBoundary(
                     unBuffer*ny
                     + utBuffer*ty;
             }
+    }
+}
+
+// ------------------------------------------------------------
+// Update interior support particles
+// Free-slip cylinder
+// ------------------------------------------------------------
+
+void updateCylinderSupport(
+    int NTheta,
+    int Nboundary,
+    int NsupportStart,
+    int NsupportLayers,
+
+    const vector<double>& theta,
+
+    vector<double>& u,
+    vector<double>& v,
+    vector<double>& rho)
+{
+    for (int layer = 1;
+         layer <= NsupportLayers;
+         ++layer)
+    {
+        for (int k = 0;
+             k < NTheta;
+             ++k)
+        {
+            int wall =
+                k;
+
+            int fluid =
+                Nboundary
+                + (layer - 1)*NTheta
+                + k;
+
+            int support =
+                NsupportStart
+                + (layer - 1)*NTheta
+                + k;
+
+
+            double th =
+                theta[wall];
+
+
+            // ----------------------------------------
+            // Local normal and tangential directions
+            // ----------------------------------------
+
+            double nx =
+                cos(th);
+
+            double ny =
+                sin(th);
+
+            double tx =
+                -sin(th);
+
+            double ty =
+                cos(th);
+
+
+            // ----------------------------------------
+            // Fluid velocity components
+            // ----------------------------------------
+
+            double unFluid =
+                u[fluid]*nx
+                + v[fluid]*ny;
+
+            double utFluid =
+                u[fluid]*tx
+                + v[fluid]*ty;
+
+
+            // ----------------------------------------
+            // Free-slip mirror condition
+            // ----------------------------------------
+
+            double unSupport =
+                -unFluid;
+
+            double utSupport =
+                utFluid;
+
+
+            // Convert back to Cartesian velocity
+            u[support] =
+                unSupport*nx
+                + utSupport*tx;
+
+            v[support] =
+                unSupport*ny
+                + utSupport*ty;
+
+
+            // ----------------------------------------
+            // Density continuation through wall
+            // ----------------------------------------
+
+            rho[support] =
+                2.0*rho[wall]
+                - rho[fluid];
+
+
+            // Numerical safety
+            rho[support] =
+                max(
+                    rho[support],
+                    1.0e-6*rho0
+                );
+        }
     }
 }
 
@@ -1902,118 +2020,7 @@ void PotentialFlowComparison(
         << endl;
 }
 
-// ------------------------------------------------------------
-// Update interior support particles
-// Free-slip cylinder
-// ------------------------------------------------------------
 
-void updateCylinderSupport(
-    int NTheta,
-    int Nboundary,
-    int NsupportStart,
-    int NsupportLayers,
-
-    const vector<double>& theta,
-
-    vector<double>& u,
-    vector<double>& v,
-    vector<double>& rho)
-{
-    for (int layer = 1;
-         layer <= NsupportLayers;
-         ++layer)
-    {
-        for (int k = 0;
-             k < NTheta;
-             ++k)
-        {
-            int wall =
-                k;
-
-            int fluid =
-                Nboundary
-                + (layer - 1)*NTheta
-                + k;
-
-            int support =
-                NsupportStart
-                + (layer - 1)*NTheta
-                + k;
-
-
-            double th =
-                theta[wall];
-
-
-            // ----------------------------------------
-            // Local normal and tangential directions
-            // ----------------------------------------
-
-            double nx =
-                cos(th);
-
-            double ny =
-                sin(th);
-
-            double tx =
-                -sin(th);
-
-            double ty =
-                cos(th);
-
-
-            // ----------------------------------------
-            // Fluid velocity components
-            // ----------------------------------------
-
-            double unFluid =
-                u[fluid]*nx
-                + v[fluid]*ny;
-
-            double utFluid =
-                u[fluid]*tx
-                + v[fluid]*ty;
-
-
-            // ----------------------------------------
-            // Free-slip mirror condition
-            // ----------------------------------------
-
-            double unSupport =
-                -unFluid;
-
-            double utSupport =
-                utFluid;
-
-
-            // Convert back to Cartesian velocity
-            u[support] =
-                unSupport*nx
-                + utSupport*tx;
-
-            v[support] =
-                unSupport*ny
-                + utSupport*ty;
-
-
-            // ----------------------------------------
-            // Density continuation through wall
-            // ----------------------------------------
-
-            rho[support] =
-                2.0*rho[wall]
-                - rho[fluid];
-
-
-            // Numerical safety
-            rho[support] =
-                max(
-                    rho[support],
-                    1.0e-6*rho0
-                );
-        }
-    }
-}
 
 
 // ------------------------------------------------------------
@@ -2398,7 +2405,7 @@ int main()
         constantsFile << "dtMin," << dtMin << endl;
         constantsFile << "CFL," << CFL << endl;
         constantsFile << "Totaltime," << Totaltime << endl;
-        constantsFile << "waterheight," << waterheight << endl;
+        //constantsFile << "waterheight," << waterheight << endl;
         constantsFile << "PI," << PI << endl;
         constantsFile << "g," << g << endl;
         constantsFile << "rho0," << rho0 << endl;
@@ -3797,7 +3804,7 @@ int main()
                 }
             }
 
-
+/*            
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Time integration corrector for fluid to n+1/2
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -3887,8 +3894,101 @@ int main()
                 uhalf,
                 vhalf,
                 rhohalf);
+*/
+
+// -----------------------------------------------------------------------------------------------------------------------------
+// Compute Time integration corrector for fluid to n+1/2
+// -----------------------------------------------------------------------------------------------------------------------------
+
+            for (int i = Nboundary; i < NfluidEnd; i++)
+            {
+                rhonew[i] = rho[i]+drhodthalf[i]*dt;
+                unew[i] = u[i]+dudthalf[i]*dt;
+                vnew[i] = v[i]+(dvdthalf[i])*dt;
+                xnew[i] = x[i];
+                ynew[i] = y[i];
+            }
+
+            for (int i = NfluidEnd;i < Nparticles;++i)
+            {
+                xnew[i] = x[i];
+                ynew[i] = y[i];
+            }
 
 
+
+// -----------------------------------------------------------------------------------------------------------------------------
+// Compute Time integration corrector for boundary to n+1
+// -----------------------------------------------------------------------------------------------------------------------------
+
+            for (int i = 0; i < Nboundary; ++i)
+            {
+                xnew[i] = xhalf[i];
+                ynew[i] = yhalf[i];
+
+                double rhoBoundary;
+
+                interpolateMDBC(
+                    i,
+                    Nboundary,
+                    NfluidEnd,
+                    NTheta,
+
+                    xnew,
+                    ynew,
+                    rhonew,
+
+                    xghost,
+                    yghost,
+
+                    Vi,
+                    hp,
+
+                    kernel,
+
+                    rhoghost[i],
+                    drhoghostX[i],
+                    drhoghostY[i],
+                    rhoBoundary);
+
+                rhonew[i] = rhoBoundary;
+
+                applyCylinderFreeSlip(i, NTheta, theta, unew, vnew);
+
+                // No-slip Cylinder
+                //uhalf[i] = 0.0;
+                //vhalf[i] = 0.0;
+            }
+
+            applyRiemannBufferBoundary(
+                unew,
+                vnew,
+                rhonew,
+                xnew,
+                ynew,
+                Vi,
+                hp,
+                theta,
+                NTheta,
+                Nboundary,
+                NfluidEnd,
+                Nr,
+                NrTotal,
+                kernel);
+
+            updateCylinderSupport(
+                NTheta,
+                Nboundary,
+                NsupportStart,
+                NsupportLayers,
+                theta,
+                unew,
+                vnew,
+                rhonew);
+ 
+                
+
+/*
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Time integration to n+1
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -3982,7 +4082,7 @@ int main()
 
 
 
-
+*/
            
 // -----------------------------------------------------------------------------------------------------------------------------
 // next loop for all particles

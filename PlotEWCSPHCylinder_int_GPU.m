@@ -116,7 +116,7 @@ streamGridSize = 320;
 
 streamSeedCount = 100;
 
-showVelocityArrows = false;
+showVelocityArrows = true;
 
 arrowStride = 3;
 
