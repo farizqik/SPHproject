@@ -25,8 +25,8 @@ dr0,0.0044721359549995798
 alphaAV,0.001
 deltadifussion,0
 Nr,50
-Nbuffer,8
-NrTotal,58
+Nbuffer,4
+NrTotal,54
 NTheta,70
 dTheta0,0.089759790102565518
 qA,1.0504534379579127
@@ -35,12 +35,12 @@ Bpolar,0.088638874495136522
 Nboundary,70
 NfluidEnd,3570
 Nfluid,3500
-NbufferParticles,560
-Nparticles,4130
-NparticlesSolver,4340
+NbufferParticles,280
+Nparticles,3850
+NparticlesSolver,4060
 NsupportLayers,3
 NsupportParticles,210
-NsupportStart,4130
+NsupportStart,3850
 hasCylinder,1
 Reynolds,100.00000000000001
 kernel,wendland
