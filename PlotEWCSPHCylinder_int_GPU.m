@@ -1,4 +1,4 @@
-function PlotEWCSPHCylinder_int_GPU(simulationFolder)
+function PlotEWCSPHCylinder_int_GPU_controls_abs(simulationFolder)
 
 %% =========================================================
 % DATASET SELECTION
@@ -118,20 +118,20 @@ streamSeedCount = 100;
 
 showVelocityArrows = true;
 
-arrowStride = 3;
+arrowAngularCount = 32;    % Representative angular locations
+arrowRadialCount = 15;      % Representative radial locations
 
-arrowScale = 1.5;
+arrowScale = 0.8;         % Increase arrow length
+arrowHeadSize = 1.0;      % Increase arrowhead size
 
 arrowColor = [0 0 0];
 
-useGPU = true;
+useGPU = false;         % CPU RAM avoids GPU->CPU gather on every interactive frame
 
 maximumGPUMemoryFraction = 0.60;
 
-if arrowStride < 1 || arrowStride ~= round(arrowStride)
-
-    error("arrowStride must be a positive integer.");
-
+if arrowAngularCount < 1 || arrowRadialCount < 1
+    error('Arrow counts must be positive.');
 end
 
 %% =========================================================
@@ -368,6 +368,12 @@ type0 = lower(strtrim(string(T0.Type)));
 
 boundary = type0 == "boundary";
 
+innerBoundary = type0 == "inner_boundary";
+
+allBoundary = boundary | innerBoundary;
+
+innerBoundaryRows = find(innerBoundary);
+
 fluid = type0 == "fluid";
 
 buffer = type0 == "buffer";
@@ -392,7 +398,7 @@ if hasCylinder ~= ~isempty(boundaryRows)
 
 end
 
-if metadataNboundary ~= numel(boundaryRows)
+if metadataNboundary ~= nnz(allBoundary)
 
     error('Nboundary in SimulationConstants.csv does not match the timestep CSV.');
 
@@ -410,7 +416,7 @@ if metadataNparticles ~= numberOfParticles
 
 end
 
-if any(~(boundary | fluid | buffer))
+if any(~(allBoundary | fluid | buffer))
 
     error("Invalid particle Type in the first frame.");
 
@@ -811,6 +817,10 @@ localComparisonTab = uitab( ...
     tabGroup, ...
     'Title','Local Comparison');
 
+tangentialTab = uitab( ...
+    tabGroup, ...
+    'Title','Tangential vs Radius');
+
 % =========================================================
 % FLOW FIELD TAB -- SPH VS ANALYTICAL POTENTIAL FLOW
 % =========================================================
@@ -913,14 +923,23 @@ hParticleInfo = text( ...
     'PickableParts','none');
 
 %% Velocity arrows
-arrowRows = fluidRows(1:arrowStride:end);
+% Select a sparse set of real SPH particles, distributed across the
+% entire radial/azimuthal domain (rather than every Nth flattened row).
+arrowAngularIndices = unique(round(linspace(1,nTheta,min(nTheta,arrowAngularCount+1))));
+if numel(arrowAngularIndices) > 1 && arrowAngularIndices(end) == nTheta
+    arrowAngularIndices(end) = []; % Avoid near-duplicate at 0/360 degrees
+end
+arrowRadialIndices = unique(round(linspace(1,nRings,min(nRings,arrowRadialCount))));
+arrowGridRows = baseSurfaceRows(arrowAngularIndices,arrowRadialIndices);
+arrowRows = arrowGridRows(:);
 
 hVelocity = quiver(ax, ...
     firstFrame(arrowRows,1), ...
     firstFrame(arrowRows,2), ...
     firstFrame(arrowRows,6), ...
     firstFrame(arrowRows,7), ...
-    arrowScale,'Color',arrowColor,'LineWidth',0.8);
+    arrowScale,'Color',arrowColor,'LineWidth',1.3, ...
+    'MaxHeadSize',arrowHeadSize);
 
 exactU0 = zeros(size(arrowRows));
 exactV0 = zeros(size(arrowRows));
@@ -929,7 +948,8 @@ hExactVelocity = quiver(axExact, ...
     firstFrame(arrowRows,1), ...
     firstFrame(arrowRows,2), ...
     exactU0,exactV0, ...
-    arrowScale,'Color',arrowColor,'LineWidth',0.8);
+    arrowScale,'Color',arrowColor,'LineWidth',1.3, ...
+    'MaxHeadSize',arrowHeadSize);
 
 if ~showVelocityArrows
     hVelocity.Visible = 'off';
@@ -962,7 +982,12 @@ end
 
 wallRadius = innerRadius;
 outerRadius = max(radius);
-streamRadii = mean(reshape(radius,nTheta,[]),1);
+% Use only physical fluid rings. Inner boundary rings have decreasing
+% radius and must not appear in the monotonic griddedInterpolant grid.
+streamRadii = mean(reshape(radius(fluidRows),nTheta,[]),1);
+if any(diff(streamRadii) <= 0)
+    error('Physical-fluid ring radii must increase strictly for streamline interpolation.');
+end
 
 angleRingRows = 1:nTheta;
 angles = mod(atan2(firstFrame(angleRingRows,2)-streamCenter(2), ...
@@ -976,7 +1001,7 @@ angles = [angles(end)-2*pi; angles; angles(1)+2*pi];
 
 queryR = hypot(streamX-streamCenter(1),streamY-streamCenter(2));
 queryTheta = mod(atan2(streamY-streamCenter(2),streamX-streamCenter(1)),2*pi);
-streamMask = queryR <= innerRadius | queryR >= outerRadius;
+streamMask = queryR < streamRadii(1) | queryR > streamRadii(end);
 
 flowUnit = [cosd(flowAngleDeg),sind(flowAngleDeg)];
 normalUnit = [-flowUnit(2),flowUnit(1)];
@@ -996,6 +1021,15 @@ if hasCylinder
         seedY = [seedY, streamCenter(2)+wakeDistance*flowUnit(2)+wakeOffsets(io)*normalUnit(2)]; %#ok<AGROW>
     end
 end
+
+%% Precompute the analytical values ONCE (coordinates never move).
+% This avoids reevaluating potential flow for all particles every frame.
+exactFieldsFixed = zeros(numberOfParticles,numberOfCachedFields);
+for fixedColumn = 3:numberOfCachedFields
+    exactFieldsFixed(:,fixedColumn) = potentialFlowField(firstFrame,fixedColumn);
+end
+set(hExactVelocity, 'UData',exactFieldsFixed(arrowRows,6), ...
+    'VData',exactFieldsFixed(arrowRows,7));
 
 %% Axes formatting
 for a = [ax axExact]
@@ -1387,6 +1421,37 @@ axLocalError = axes( ...
     'Position',[0.55 0.12 0.40 0.71]);
 
 %% =========================================================
+% TANGENTIAL VELOCITY PROFILE: WALL TO OUTER PHYSICAL RING
+% ==========================================================
+% User-selected angle is measured counter-clockwise from global +x.
+% Display samples at the actual fixed particle locations along the
+% nearest angular ray, without introducing radial interpolation error.
+uicontrol(tangentialTab,'Style','text', ...
+    'String','Angle from +x (deg):','Units','normalized', ...
+    'Position',[0.05 0.92 0.19 0.045], ...
+    'HorizontalAlignment','right','BackgroundColor','w');
+tangentialAngleEdit = uicontrol(tangentialTab,'Style','edit', ...
+    'String','90','Units','normalized', ...
+    'Position',[0.25 0.923 0.10 0.043], ...
+    'BackgroundColor','w');
+tangentialInfo = uicontrol(tangentialTab,'Style','text', ...
+    'String','','Units','normalized', ...
+    'Position',[0.38 0.915 0.55 0.055], ...
+    'HorizontalAlignment','left','BackgroundColor','w');
+axTangential = axes(tangentialTab,'Position',[0.10 0.15 0.83 0.68]);
+hTangentialSPH = plot(axTangential,NaN,NaN,'o-','LineWidth',1.6, ...
+    'MarkerSize',4,'DisplayName','Eulerian SPH');
+hold(axTangential,'on');
+hTangentialExact = plot(axTangential,NaN,NaN,'--','LineWidth',1.8, ...
+    'DisplayName','Potential flow');
+legend(axTangential,'Location','best');
+grid(axTangential,'on');
+box(axTangential,'on');
+xlabel(axTangential,'Absolute tangential velocity |u_\theta| (m/s)');
+ylabel(axTangential,'Distance from cylinder surface, r - r_0 (m)');
+title(axTangential,'Absolute tangential velocity along a radial line');
+
+%% =========================================================
 
 % NAVIGATION CONTROLS
 
@@ -1449,6 +1514,27 @@ saveVideoButton = uicontrol( ...
     'Units','normalized', ...
     'Position',[0.15 0.015 0.075 0.043], ...
     'TooltipString','Save all loaded frames as an MP4 animation');
+
+% Interactive overlay visibility controls (Flow Field tab only).
+arrowToggle = uicontrol( ...
+    flowTab, ...
+    'Style','checkbox', ...
+    'String','Arrows', ...
+    'Value',double(showVelocityArrows), ...
+    'BackgroundColor','w', ...
+    'Units','normalized', ...
+    'Position',[0.245 0.019 0.09 0.035], ...
+    'TooltipString','Show or hide velocity arrows in both panels');
+
+streamlineToggle = uicontrol( ...
+    flowTab, ...
+    'Style','checkbox', ...
+    'String','Streamlines', ...
+    'Value',double(showStreamlines), ...
+    'BackgroundColor','w', ...
+    'Units','normalized', ...
+    'Position',[0.335 0.019 0.14 0.035], ...
+    'TooltipString','Show or hide streamlines in both panels');
 
 parameterText = uicontrol( ...
     flowTab, ...
@@ -1563,7 +1649,11 @@ localLayerMenu.Callback = @updateLocalComparisonPlot;
 localThetaMenu.Callback = @updateLocalComparisonPlot;
 localRefreshButton.Callback = @updateLocalComparisonPlot;
 
+arrowToggle.Callback = @toggleArrows;
+streamlineToggle.Callback = @toggleStreamlines;
+
 parameterMenu.Callback = @parameterChanged;
+    tangentialAngleEdit.Callback = @updateTangentialPlot;
 
 frameSlider.Callback = @sliderMoved;
 
@@ -1739,6 +1829,66 @@ end
     end
 
     %% ---------------------------------------------------------
+    % Tangential velocity from cylinder wall to outer physical domain
+    % ----------------------------------------------------------
+    function updateTangentialPlot(~,~)
+        if ~isgraphics(axTangential)
+            return;
+        end
+        angleRequested = str2double(tangentialAngleEdit.String);
+        if ~isfinite(angleRequested)
+            tangentialInfo.String = 'Enter a finite angle in degrees.';
+            return;
+        end
+        angleRequested = mod(angleRequested,360);
+        % Use angular positions actually present in the C++ polar grid.
+        anglesPhysical = mod(atan2( ...
+            firstFrame(firstFluidRingRows,2)-streamCenter(2), ...
+            firstFrame(firstFluidRingRows,1)-streamCenter(1)),2*pi);
+        angularDifference = angle(exp(1i*(anglesPhysical-deg2rad(angleRequested))));
+        [~,angleIndex] = min(abs(angularDifference));
+        rayRows = baseSurfaceRows(angleIndex,:);
+        % Include boundary point at surface, where the cylinder exists.
+        if hasCylinder
+            rayRows = [boundaryRows(angleIndex);rayRows(:)];
+        else
+            rayRows = rayRows(:);
+        end
+        currentState = guidata(fig);
+        if isempty(currentState)
+            frame = firstFrame;
+            frameIndex = 1;
+        else
+            frame = currentState.currentFrame;
+            frameIndex = currentState.index;
+        end
+        xp = frame(rayRows,1)-streamCenter(1);
+        yp = frame(rayRows,2)-streamCenter(2);
+        rr = hypot(xp,yp);
+        thetaActual = atan2(yp,xp);
+        utSPH = -frame(rayRows,6).*sin(thetaActual) + ...
+                 frame(rayRows,7).*cos(thetaActual);
+        [uExact,vExact] = potentialFlowVelocity(frame(rayRows,1),frame(rayRows,2));
+        utExact = -uExact.*sin(thetaActual) + vExact.*cos(thetaActual);
+        [radialDistance,ord] = sort(rr-innerRadius);
+        set(hTangentialSPH,'XData',abs(utSPH(ord)), ...
+            'YData',radialDistance);
+        set(hTangentialExact,'XData',abs(utExact(ord)), ...
+            'YData',radialDistance);
+        actualDeg = mod(rad2deg(thetaActual(1)),360);
+        tangentialInfo.String = sprintf( ...
+            'Nearest grid angle: %.2f deg | frame t = %.4f s | %d radial points', ...
+            actualDeg,time(frameIndex),numel(rayRows));
+        title(axTangential,sprintf( ...
+            'Absolute tangential velocity: angle %.2f deg, t = %.4f s', ...
+            actualDeg,time(frameIndex)));
+        % axis limits adjust after changing data
+        axis(axTangential,'tight');
+        xl = xlim(axTangential);
+        xlim(axTangential,[0 max(xl(2),eps)]);
+    end
+
+    %% ---------------------------------------------------------
 
     % Return one cached frame to CPU
 
@@ -1766,6 +1916,34 @@ end
 
     % ----------------------------------------------------------
 
+    function toggleArrows(source,~)
+        showVelocityArrows = logical(source.Value);
+        if showVelocityArrows
+            hVelocity.Visible = 'on';
+            hExactVelocity.Visible = 'on';
+        else
+            hVelocity.Visible = 'off';
+            hExactVelocity.Visible = 'off';
+        end
+        drawnow limitrate;
+    end
+
+    function toggleStreamlines(source,~)
+        showStreamlines = logical(source.Value);
+        if showStreamlines
+            % Generate only when requested, using the currently displayed frame.
+            currentState = guidata(fig);
+            updateStreamlines(currentState.currentFrame);
+        else
+            % Remove the costly line objects immediately from both panels.
+            delete(hStreamlines(isgraphics(hStreamlines)));
+            delete(hExactStreamlines(isgraphics(hExactStreamlines)));
+            hStreamlines = gobjects(0);
+            hExactStreamlines = gobjects(0);
+        end
+        drawnow limitrate;
+    end
+
     function showFrame(requestedIndex)
 
         requestedIndex = ...
@@ -1785,19 +1963,13 @@ end
         meshC = frame(surfaceRows(:),fieldColumn);
         meshC(~isfinite(meshC)) = NaN;
 
-        exactField = potentialFlowField(frame,fieldColumn);
+        exactField = exactFieldsFixed(:,fieldColumn);
         meshCExact = exactField(surfaceRows(:));
         meshCExact(~isfinite(meshCExact)) = NaN;
 
-        set(hFluid, ...
-            'XData',reshape(meshX,meshSize), ...
-            'YData',reshape(meshY,meshSize), ...
-            'CData',reshape(meshC,meshSize));
+        set(hFluid,'CData',reshape(meshC,meshSize));
 
-        set(hExactFluid, ...
-            'XData',reshape(meshX,meshSize), ...
-            'YData',reshape(meshY,meshSize), ...
-            'CData',reshape(meshCExact,meshSize));
+        set(hExactFluid,'CData',reshape(meshCExact,meshSize));
 
         %% Velocity arrow update
 
@@ -1812,21 +1984,18 @@ end
         arrowV(invalidArrow) = NaN;
 
         set(hVelocity, ...
-            'XData',frame(arrowRows,1), ...
-            'YData',frame(arrowRows,2), ...
             'UData',arrowU, ...
             'VData',arrowV);
 
-        [exactArrowU,exactArrowV] = potentialFlowVelocity( ...
-            frame(arrowRows,1),frame(arrowRows,2));
+        exactArrowU = exactFieldsFixed(arrowRows,6);
+        exactArrowV = exactFieldsFixed(arrowRows,7);
 
-        set(hExactVelocity, ...
-            'XData',frame(arrowRows,1), ...
-            'YData',frame(arrowRows,2), ...
-            'UData',exactArrowU, ...
-            'VData',exactArrowV);
+        % Analytical arrows remain unchanged at every timestep.
+        % Their UData/VData were set during initialisation.
 
-        updateStreamlines(frame);
+        if showStreamlines
+            updateStreamlines(frame);
+        end
 
         %% Boundary positions
 
@@ -1932,6 +2101,9 @@ end
 
         end
 
+        if isequal(tabGroup.SelectedTab,tangentialTab)
+            updateTangentialPlot([],[]);
+        end
         drawnow limitrate;
 
     end
@@ -2349,13 +2521,13 @@ end
     function updateSelectedParticleDisplay(row,frame)
 
         if boundary(row)
-
             particleType = 'Boundary';
-
+        elseif innerBoundary(row)
+            particleType = 'Inner boundary';
+        elseif buffer(row)
+            particleType = 'Buffer';
         else
-
             particleType = 'Fluid';
-
         end
 
         % Highlight only the selected particle; the rest of the fluid
@@ -2564,6 +2736,10 @@ end
 
     function comparisonTabChanged(~,event)
 
+        if isequal(event.NewValue,tangentialTab)
+            updateTangentialPlot([],[]);
+            return;
+        end
         if ~comparisonAvailable
             return;
         end
@@ -3193,8 +3369,8 @@ end
         end
 
         % ---------------- SPH streamline field ----------------
-        U = reshape(frame(:,6),nTheta,[]);
-        V = reshape(frame(:,7),nTheta,[]);
+        U = reshape(frame(fluidRows,6),nTheta,[]);
+        V = reshape(frame(fluidRows,7),nTheta,[]);
         U = U(angleOrder,:);
         V = V(angleOrder,:);
         U = [U(end,:);U;U(1,:)];

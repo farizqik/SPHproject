@@ -4,3 +4,14 @@ PotentialFlowGlobalComparison_*.csv
 *.obj
 *.o
 build/
+
+# Simulation output
+*.csv
+*.mp4
+*.pdb
+*.exe
+*.obj
+*.o
+
+# Build directories
+build/

@@ -1,6 +1,7 @@
-// Optimized for FIXED positions and FIXED smoothing lengths.
-// Rebuild neighbours if either changes. Gaussian retains its full support.
-// Build: g++ -O3 -DNDEBUG -std=c++17 -fopenmp EWCSPHCylinder_fast.cpp -o sph_fast
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #include <algorithm>
 #include<iostream>
 #include<cmath>
@@ -23,7 +24,7 @@ using namespace std;
 const double dtMax = 0.001;
 const double dtMin = 1.0e-8;
 const double CFL = 0.3;
-const double Totaltime = 5.0;
+const double Totaltime = 2.0;
 
 // ------------------------------------------------------------
 // Geometry
@@ -61,7 +62,7 @@ const double c0 = 20.0*inletVelocity;
 const double gammaEOS = 7.0;
 const double B = c0*c0*rho0/gammaEOS;
 
-const double viscosity = 1.0e-4;
+const double viscosity = 1.0e-5;
 const double tvis = 0.01;
 const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder;
@@ -75,7 +76,7 @@ const double deltadifussion = 0.0;
 
 
 const int NsupportLayers = 3;
-const int Nr = 100;
+const int Nr = 200;
 const int Nbuffer = 6;      // open-boundary buffer rings
 int NrTotal = Nr + Nbuffer;
 
@@ -307,6 +308,10 @@ double calculateDt(int Nboundary,
     {
         double dtForce = numeric_limits<double>::infinity(); //initialise dtForce to positive infinity (will be replaced if there are any fluid particles)
         double dtCFL = numeric_limits<double>::infinity(); //initialise dtCFL to positive infinity (will be replaced if there are any fluid particles)
+        
+        #ifdef _OPENMP
+        #pragma omp parallel for schedule(static) reduction(min:dtForce,dtCFL)
+        #endif
 
         for (int i = Nboundary; i < NfluidEnd; ++i)
         {
@@ -677,7 +682,34 @@ double radialSum(double qA, int N)
     return (pow(qA, N) - 1.0) / (qA - 1.0);
 }
 
+// Geometry-only boundary neighbourhoods: fixed Eulerian positions and smoothing lengths.
+// These lists are built once and reused at every integration stage.
+using BoundaryNeighbours = vector<vector<int>>;
 
+BoundaryNeighbours buildBoundaryNeighbours(
+    const vector<double>& x, const vector<double>& y,
+    const vector<double>& xghost, const vector<double>& yghost,
+    const vector<double>& hp, int Nboundary, int NfluidEnd,
+    int NTheta, const string& kernel, bool ghostPoints)
+{
+    const int count = ghostPoints ? Nboundary : NTheta;
+    BoundaryNeighbours result(count);
+    const double support = (kernel == "gaussian") ? 3.0 : 2.0;
+    for (int k = 0; k < count; ++k)
+    {
+        const int i = ghostPoints ? k : NfluidEnd - NTheta + k;
+        const double xi = ghostPoints ? xghost[k] : x[i];
+        const double yi = ghostPoints ? yghost[k] : y[i];
+        const double radius2 = support*support*hp[i]*hp[i];
+        for (int j = Nboundary; j < NfluidEnd; ++j)
+        {
+            const double dx = xi-x[j], dy = yi-y[j];
+            if (dx*dx + dy*dy <= radius2)
+                result[k].push_back(j);
+        }
+    }
+    return result;
+}
 
 
 
@@ -690,6 +722,7 @@ void interpolateMDBC(
     int Nboundary,
     int NfluidEnd,
     int NTheta,
+    const BoundaryNeighbours& boundaryNeighbours,
 
     const vector<double>& xState,
     const vector<double>& yState,
@@ -719,12 +752,9 @@ void interpolateMDBC(
     double shepardNumerator = 0.0;
     double shepardDenominator = 0.0;
 
-    // h representative of the fluid near this boundary particle
-    double h = hp[i + NTheta];
+    double h = hp[i];
 
-    for (int j = Nboundary;
-         j < NfluidEnd;
-         ++j)
+    for (int j : boundaryNeighbours[i])
     {
         double rx =
             xGhost[i] - xState[j];
@@ -931,12 +961,15 @@ void interpolateMDBC(
 
 
 void applyCylinderFreeSlip(
-    int i, int NTheta,
+    int i, int NTheta, int Nboundary,
     const vector<double>& theta,
     vector<double>& u,
     vector<double>& v)
 {
-    const int j = i + NTheta;
+    const int j =
+        Nboundary
+        + max(0, i/NTheta-1)*NTheta
+        + i%NTheta;
 
     const double th = theta[i];
 
@@ -951,7 +984,9 @@ void applyCylinderFreeSlip(
         u[j]*tx + v[j]*ty;
 
     // No penetration
-    const double un = 0.0;
+    const double un =
+        (i < NTheta) ? 0.0 :
+        -(u[j]*nx + v[j]*ny);
 
     u[i] = un*nx + ut*tx;
     v[i] = un*ny + ut*ty;
@@ -978,14 +1013,17 @@ void applyRiemannBufferBoundary(
     int NfluidEnd,
     int Nr,
     int NrTotal,
-    const string& kernel)
+    const string& kernel,
+    const BoundaryNeighbours& bufferNeighbours)
 {
-    
+    #ifdef _OPENMP
+    #pragma omp parallel for schedule(static)
+    #endif
     for (int k = 0; k < NTheta; ++k)
     {
         // Last physical-fluid particle
             // at the same theta
-            int interface = Nr*NTheta + k;
+            int interface = Nboundary + (Nr-1)*NTheta + k;
 
             double nx = cos(theta[interface]);
             double ny = sin(theta[interface]);
@@ -998,7 +1036,7 @@ void applyRiemannBufferBoundary(
             double uInt = 0.0;
             double vInt = 0.0;
 
-            for (int j = Nboundary; j < NfluidEnd; ++j)
+            for (int j : bufferNeighbours[k])
             {
                 double dx = x[interface] - x[j];
                 double dy = y[interface] - y[j];
@@ -1146,7 +1184,7 @@ void applyRiemannBufferBoundary(
             for (int ir = Nr + 1; ir <= NrTotal; ++ir)
             {
                 // Buffer particle
-                int i = ir*NTheta + k;
+                int i = Nboundary + (ir-1)*NTheta + k;
                 
                 rho[i] =
                     rho0*pow(
@@ -1177,118 +1215,6 @@ void applyRiemannBufferBoundary(
     }
 }
 
-// ------------------------------------------------------------
-// Update interior support particles
-// Free-slip cylinder
-// ------------------------------------------------------------
-
-void updateCylinderSupport(
-    int NTheta,
-    int Nboundary,
-    int NsupportStart,
-    int NsupportLayers,
-
-    const vector<double>& theta,
-
-    vector<double>& u,
-    vector<double>& v,
-    vector<double>& rho)
-{
-    for (int layer = 1;
-         layer <= NsupportLayers;
-         ++layer)
-    {
-        for (int k = 0;
-             k < NTheta;
-             ++k)
-        {
-            int wall =
-                k;
-
-            int fluid =
-                Nboundary
-                + (layer - 1)*NTheta
-                + k;
-
-            int support =
-                NsupportStart
-                + (layer - 1)*NTheta
-                + k;
-
-
-            double th =
-                theta[wall];
-
-
-            // ----------------------------------------
-            // Local normal and tangential directions
-            // ----------------------------------------
-
-            double nx =
-                cos(th);
-
-            double ny =
-                sin(th);
-
-            double tx =
-                -sin(th);
-
-            double ty =
-                cos(th);
-
-
-            // ----------------------------------------
-            // Fluid velocity components
-            // ----------------------------------------
-
-            double unFluid =
-                u[fluid]*nx
-                + v[fluid]*ny;
-
-            double utFluid =
-                u[fluid]*tx
-                + v[fluid]*ty;
-
-
-            // ----------------------------------------
-            // Free-slip mirror condition
-            // ----------------------------------------
-
-            double unSupport =
-                -unFluid;
-
-            double utSupport =
-                utFluid;
-
-
-            // Convert back to Cartesian velocity
-            u[support] =
-                unSupport*nx
-                + utSupport*tx;
-
-            v[support] =
-                unSupport*ny
-                + utSupport*ty;
-
-
-            // ----------------------------------------
-            // Density continuation through wall
-            // ----------------------------------------
-
-            rho[support] =
-                2.0*rho[wall]
-                - rho[fluid];
-
-
-            // Numerical safety
-            rho[support] =
-                max(
-                    rho[support],
-                    1.0e-6*rho0
-                );
-        }
-    }
-}
 
 // ------------------------------------------------------------
 // Potential-flow comparison
@@ -1315,6 +1241,7 @@ void PotentialFlowComparison(
     const vector<double>& pressure,
 
     int NTheta,
+    int Nboundary,
 
     double r0,
     double dTheta,
@@ -1444,7 +1371,7 @@ void PotentialFlowComparison(
         // ====================================================
 
         const int j =
-            iBoundary + NTheta;
+            Nboundary + k;
 
         const double dr =
             r[j] - r[iBoundary];
@@ -1631,7 +1558,7 @@ void PotentialFlowComparison(
              ++layer)
         {
             const int i =
-                layer*NTheta + k;
+                (layer == 0) ? k : Nboundary + (layer-1)*NTheta + k;
 
 
             const double ri =
@@ -2249,6 +2176,14 @@ vector<double> vorticity;
 
 int main()
 {
+    #ifdef _OPENMP
+    cout << "OpenMP enabled" << endl;
+    cout << "Max OpenMP threads: "
+        << omp_get_max_threads() << endl;
+    #else
+    cout << "OpenMP disabled" << endl;
+    #endif
+
     double qAlow = 0.0;
     double qAhigh = 2.0;
     double maxiter = 1000;
@@ -2291,7 +2226,8 @@ int main()
 
 
     
-    int NTheta =  round(2*PI*r0/dr0);
+    //int NTheta =  round(2*PI*r0/dr0);
+    int NTheta =  360;
     double dTheta0 = 2*PI/NTheta;
 
 
@@ -2364,11 +2300,66 @@ int main()
         i++;
     }
 
-    int Nboundary = i;
-
+    
 
     // ============================================================
-    // 2. Fluid + outer buffer rings
+    // 2. Interior support rings
+    // ============================================================
+
+    int NsupportStart = i;
+
+    for (int layer = 1;
+        layer <= NsupportLayers;
+        ++layer)
+    {
+
+        double rpSupport = 2.0*r0 - (Bpolar*(pow(qA,layer)-1.0)+r0);
+
+        if (rpSupport <= 0.0)
+        {
+            throw runtime_error(
+                "NsupportLayers too large: "
+                "support ring reaches r <= 0."
+            );
+        }
+
+        for (int k = 0;
+            k < NTheta;
+            ++k)
+        {
+            double thetap =
+                k*dTheta0;
+
+            double xp =
+                rpSupport*cos(thetap);
+
+            double yp =
+                rpSupport*sin(thetap);
+
+            r.push_back(rpSupport);
+            theta.push_back(thetap);
+
+            x.push_back(xp);
+            y.push_back(yp);
+
+            /*cout << "ID: " << i
+                << "  Type: Support"
+                << "  Layer: " << layer
+                << "  r: " << rpSupport
+                << "  theta: " << thetap
+                << "  x: " << xp
+                << "  y: " << yp
+                << endl;*/
+
+            i++;
+        }
+    }
+
+
+    int Nboundary = i;
+
+    // ============================================================
+    // 3. Fluid + outer buffer rings
     // ============================================================
 
     for (int ir = 1; ir <= NrTotal; ++ir)
@@ -2412,88 +2403,17 @@ int main()
     // Fluid / buffer bookkeeping
     // ============================================================
 
-    int NfluidEnd =
-        (Nr + 1)*NTheta;
+    int NfluidEnd = Nboundary + Nr*NTheta;
 
-    int Nfluid =
-        NfluidEnd - Nboundary;
+    int Nfluid = NfluidEnd - Nboundary;
 
-    int NbaseParticles =
-        i;
+    int NbaseParticles = i;
 
-    int NbufferParticles =
-        NbaseParticles - NfluidEnd;
+    int NbufferParticles = NbaseParticles - NfluidEnd;
 
+    int NsupportParticles = Nboundary - NsupportStart;
 
-    // ============================================================
-    // 3. Interior support rings
-    // ============================================================
-
-    int NsupportStart =
-        i;
-
-    for (int layer = 1;
-        layer <= NsupportLayers;
-        ++layer)
-    {
-        int fluidRingStart =
-            Nboundary
-            + (layer - 1)*NTheta;
-
-        double rpSupport =
-            2.0*r0
-            - r[fluidRingStart];
-
-        if (rpSupport <= 0.0)
-        {
-            throw runtime_error(
-                "NsupportLayers too large: "
-                "support ring reaches r <= 0."
-            );
-        }
-
-        for (int k = 0;
-            k < NTheta;
-            ++k)
-        {
-            double thetap =
-                k*dTheta0;
-
-            double xp =
-                rpSupport*cos(thetap);
-
-            double yp =
-                rpSupport*sin(thetap);
-
-            r.push_back(rpSupport);
-            theta.push_back(thetap);
-
-            x.push_back(xp);
-            y.push_back(yp);
-
-            /*cout << "ID: " << i
-                << "  Type: Support"
-                << "  Layer: " << layer
-                << "  r: " << rpSupport
-                << "  theta: " << thetap
-                << "  x: " << xp
-                << "  y: " << yp
-                << endl;*/
-
-            i++;
-        }
-    }
-
-
-    // ============================================================
-    // Final particle counts
-    // ============================================================
-
-    int NsupportParticles =
-        i - NsupportStart;
-
-    int Nparticles =
-        i;
+    int Nparticles = i;
 
 
     cout << endl;
@@ -2574,7 +2494,7 @@ int main()
         constantsFile << "NfluidEnd," << NfluidEnd << endl;
         constantsFile << "Nfluid," << Nfluid << endl;
         constantsFile << "NbufferParticles," << NbufferParticles << endl;
-        constantsFile << "Nparticles," << NsupportStart << endl;
+        constantsFile << "Nparticles," << Nparticles << endl;
         
         constantsFile << "NparticlesSolver,"
               << Nparticles << endl;
@@ -2720,7 +2640,7 @@ int main()
         }*/
         
         //Slip Initial Conditions
-        for (int i = 0; i < NsupportStart; ++i)
+        for (int i = Nboundary; i < Nparticles; ++i)
         {
             double ri = r[i];
             double th = theta[i];
@@ -2768,8 +2688,8 @@ int main()
             pressureexact[i] = pInitial;
         }
 
-        for (int i = NsupportStart;
-            i < Nparticles;
+        for (int i = 0;
+            i < Nboundary;
             ++i)
         {
             u[i] = 0.0;
@@ -2811,42 +2731,40 @@ int main()
 
         for (int i = 0; i < Nboundary; ++i)
         {
-            // Corresponding particle on first fluid ring
-            int j = i + NTheta;
-
-            // Ghost point mirrored across the wall interface
-            double dg = r[j] - r[i];
-
             double nx = cos(theta[i]);
             double ny = sin(theta[i]);
 
-            xghost[i] = x[i] + dg*nx;
-            yghost[i] = y[i] + dg*ny;
+            if (i < NTheta)
+            {
+                // Cylinder wall: keep ghost point on fluid side
+                double dg = r[Nboundary + i] - r[i];
+
+                xghost[i] = x[i] + dg*nx;
+                yghost[i] = y[i] + dg*ny;
+            }
+            else
+            {
+                // Inner boundary: reflect across cylinder surface
+                xghost[i] = x[i] + 2.0*(r0-r[i])*nx;
+                yghost[i] = y[i] + 2.0*(r0-r[i])*ny;
+            }
         }
 
         for (int i = 0; i < Nboundary; ++i)
         {
-            applyCylinderFreeSlip(i, NTheta, theta, u, v);
+            applyCylinderFreeSlip(i, NTheta, Nboundary, theta, u, v);
         }
 
-        updateCylinderSupport(
-            NTheta,
-            Nboundary,
-            NsupportStart,
-            NsupportLayers,
-            theta,
-            u,
-            v,
-            rho);
+
             
 
 
 
-// ----------------------------------------------
-// Calculate Vi, mass and h for ALL particles
-// ----------------------------------------------
+        // ----------------------------------------------
+        // Calculate Vi, mass and h for ALL particles
+        // ----------------------------------------------
 
-        for (int i = 0; i < NsupportStart; i++)
+        for (int i = 0; i < Nparticles; i++)
         {
             int ir = i/NTheta;
 
@@ -2855,35 +2773,89 @@ int main()
 
             if (ir == 0)
             {
-                dri =
-                    0.5*(r[i + NTheta] - r[i]);
+                // Cylinder wall
+                if (NsupportLayers > 0)
+                {
+                    rin = 0.5*(r[i] + r[i + NTheta]);
+                }
+                else
+                {
+                    rin = r[i]- 0.5*(r[i+Nboundary]-r[i]);
+                }
 
-                rin = r0;
-                rout =
-                    0.5*(r[i] + r[i + NTheta]);
+                rout = 0.5*(r[i] + r[i+Nboundary]);
+
             }
-            else if (ir == NrTotal)
+            else if (i < Nboundary)
             {
-                dri =
-                    0.5*(r[i] - r[i - NTheta]);
+                // Inner boundary particles
+                if (ir == NsupportLayers)
+                {
 
+                    if (r[i] - 0.5*(r[i - NTheta] - r[i]) > 0.0)
+                    {
+                        // Extend half-spacing inward
+                        rin = r[i] - 0.5*(r[i - NTheta] - r[i]);
+                    }
+                    else
+                    {
+                        // Stop at the innermost particle
+                        rin = r[i];
+                    }
+
+                    rout = 0.5*(r[i] + r[i - NTheta]);
+
+
+
+                }
+                else
+                {
+                    rin =
+                        0.5*(r[i] + r[i + NTheta]);
+
+                    rout =
+                        0.5*(r[i] + r[i - NTheta]);
+
+
+                }
+            }
+            else if (ir == NsupportLayers + 1)
+            {
+                // First fluid ring
+
+                rin = 0.5*(r0+r[i]);
+                rout = 0.5*(r[i] + r[i + NTheta]);
+
+
+            }
+            else if (ir == NsupportLayers + NrTotal)
+            {
+                // Last outer buffer ring
                 rin =
                     0.5*(r[i] + r[i - NTheta]);
 
-                rout =
-                    r[i] + 0.5*(r[i] - r[i - NTheta]);
+                rout = r[i] + 0.5*(r[i] - r[i - NTheta]);
+
+
             }
             else
             {
-                dri =
-                    0.5*(r[i + NTheta]
-                    - r[i - NTheta]);
+                // Other fluid and buffer rings
 
                 rin =
                     0.5*(r[i] + r[i - NTheta]);
 
                 rout =
                     0.5*(r[i] + r[i + NTheta]);
+
+                
+            }
+
+            dri = rout - rin;
+
+            if (rin < 0.0 || dri <= 0.0)
+            {
+                throw runtime_error("Invalid radial control volume");
             }
 
             Vi[i] =
@@ -2902,41 +2874,14 @@ int main()
                 coefh*dpi;
         }
 
-        // --------------------------------------------------
-        // Support-particle volume and smoothing length
-        // --------------------------------------------------
+ // Cache fixed ghost-point and open-boundary neighbourhoods once.
+        const BoundaryNeighbours mdbcNeighbours = buildBoundaryNeighbours(
+            x, y, xghost, yghost, hp, Nboundary, NfluidEnd,
+            NTheta, kernel, true);
+        const BoundaryNeighbours riemannNeighbours = buildBoundaryNeighbours(
+            x, y, xghost, yghost, hp, Nboundary, NfluidEnd,
+            NTheta, kernel, false);
 
-        for (int layer = 1;
-            layer <= NsupportLayers;
-            ++layer)
-        {
-            for (int k = 0;
-                k < NTheta;
-                ++k)
-            {
-                int fluid =
-                    Nboundary
-                    + (layer - 1)*NTheta
-                    + k;
-
-                int support =
-                    NsupportStart
-                    + (layer - 1)*NTheta
-                    + k;
-
-                Vi[support] =
-                    Vi[fluid];
-
-                hp[support] =
-                    hp[fluid];
-
-                mass[support] =
-                    rho[support]
-                    * Vi[support];
-            }
-        }
-
-        
 // Build once after fluid, buffer and support smoothing lengths are assigned.
         const NeighbourLists neighbours = buildNeighbours(
             x, y, hp, Nboundary, NfluidEnd, Nparticles, kernel);
@@ -3085,21 +3030,21 @@ int main()
         {
             string Type;
 
-            if (i < Nboundary)
+            if (i < NTheta)
             {
                 Type = "boundary";
+            }
+            else if (i < Nboundary)
+            {
+                Type = "inner_boundary";
             }
             else if (i < NfluidEnd)
             {
                 Type = "fluid";
             }
-            else if (i < NsupportStart)
-            {
-                Type = "buffer";
-            }
             else
             {
-                Type = "support";
+                Type = "buffer";
             }
 
             file << i << ","
@@ -3341,7 +3286,9 @@ int main()
 // -----------------------------------------------------------------------------------------------------------------------------
 // mDBC Interpolation at n
 // -----------------------------------------------------------------------------------------------------------------------------
-
+            #ifdef _OPENMP
+            #pragma omp parallel for schedule(static)
+            #endif
             for (int i = 0; i < Nboundary; ++i)
             {
                 double rhoBoundary;
@@ -3351,6 +3298,7 @@ int main()
                     Nboundary,
                     NfluidEnd,
                     NTheta,
+                    mdbcNeighbours,
 
                     x,
                     y,
@@ -3371,7 +3319,7 @@ int main()
 
                 rho[i] = rhoBoundary;
 
-                applyCylinderFreeSlip(i, NTheta, theta, u, v);
+                applyCylinderFreeSlip(i, NTheta, Nboundary, theta, u, v);
 
                 // Stationary no-slip cylinder
                 //u[i] = 0.0;
@@ -3392,23 +3340,17 @@ int main()
                 NfluidEnd,
                 Nr,
                 NrTotal,
-                kernel);
+                kernel, riemannNeighbours);
 
-            updateCylinderSupport(
-                NTheta,
-                Nboundary,
-                NsupportStart,
-                NsupportLayers,
-                theta,
-                u,
-                v,
-                rho);
+
 
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Pressure and Force at n
 // -----------------------------------------------------------------------------------------------------------------------------        
-            
+            #ifdef _OPENMP
+            #pragma omp parallel for schedule(static)
+            #endif
             for (int i = 0; i < Nparticles; i++)
             {
                 pressure[i] = B*(pow(rho[i]/rho0,gammaEOS)-1.0);                         
@@ -3428,6 +3370,7 @@ int main()
                 pressure,
 
                 NTheta,
+                Nboundary,
 
                 r0,
                 dTheta0,
@@ -3445,14 +3388,15 @@ int main()
             double KE = 0.0;
             for (int i = Nboundary; i < NfluidEnd; i++)
             {
-                KE += 0.5 * mass[i]* ((u[i]*u[i])+(v[i]*v[i]));
+                KE += 0.5*rho[i]*Vi[i]*((u[i]*u[i])+(v[i]*v[i]));
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Vorticity
 // -----------------------------------------------------------------------------------------------------------------------------
-
-            for (int i = Nboundary;
+            if (t >= nextOutputTime - 1e-12)
+            {
+                for (int i = Nboundary;
                 i < NfluidEnd;
                 ++i)
             {
@@ -3526,6 +3470,8 @@ int main()
                         );
                 }
             }
+            }
+            
 
 
 // -----------------------------------------------------------------------------------------------------------------------------
@@ -3724,11 +3670,15 @@ int main()
                 file << endl;
                 file << "t" << "," << t << endl;
                 file << "ID"<< ","<< "x"<< "," << "y" << ","<< ","<<"rho"<< "," << "drhodt" << "," << "pressure"<< "," << "," << "u" << "," << "v" << "," << "velocity" << "," << "," << "dudt" << "," << "dvdt" <<","<< "vorticity" <<"," << "type" << endl;
-                for (int i = 0; i < NsupportStart; ++i)
+                for (int i = 0; i < Nparticles; ++i)
                 {
-                    if (i < Nboundary)
+                    if (i < NTheta)
                     {
                         type = "boundary";
+                    }
+                    else if (i < Nboundary)
+                    {
+                        type = "inner_boundary";
                     }
                     else if (i < NfluidEnd)
                     {
@@ -3749,7 +3699,9 @@ int main()
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Time integration predictor for fluid to n+1/2
 // -----------------------------------------------------------------------------------------------------------------------------
-
+            #ifdef _OPENMP
+            #pragma omp parallel for schedule(static)
+            #endif
             for (int i = Nboundary;i < NfluidEnd;i++)
             {
                 rhohalf[i] =
@@ -3774,7 +3726,9 @@ int main()
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Time integration predictor for boundary to n+1/2
 // -----------------------------------------------------------------------------------------------------------------------------
-
+            #ifdef _OPENMP
+            #pragma omp parallel for schedule(static)
+            #endif
             for (int i = 0; i < Nboundary; i++)
             {
 
@@ -3789,6 +3743,7 @@ int main()
                     Nboundary,
                     NfluidEnd,
                     NTheta,
+                    mdbcNeighbours,
 
                     xhalf,
                     yhalf,
@@ -3809,7 +3764,7 @@ int main()
 
                 rhohalf[i] = rhoBoundary;
 
-                applyCylinderFreeSlip(i, NTheta, theta, uhalf, vhalf);
+                applyCylinderFreeSlip(i, NTheta, Nboundary, theta, uhalf, vhalf);
 
                 // No-slip Cylinder
                 //uhalf[i] = 0.0;
@@ -3830,23 +3785,16 @@ int main()
                 NfluidEnd,
                 Nr,
                 NrTotal,
-                kernel);
+                kernel, riemannNeighbours);
 
-            updateCylinderSupport(
-                NTheta,
-                Nboundary,
-                NsupportStart,
-                NsupportLayers,
-                theta,
-                uhalf,
-                vhalf,
-                rhohalf);
 
 
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Pressure at n+1/2
 // -----------------------------------------------------------------------------------------------------------------------------        
-            
+            #ifdef _OPENMP
+            #pragma omp parallel for schedule(static)
+            #endif
             for (int i = 0; i < Nparticles; i++)
             {
                 pressurehalf[i] = B*(pow(rhohalf[i]/rho0,gammaEOS)-1.0);                         
@@ -3932,7 +3880,7 @@ int main()
 
                 rhohalf[i] = rhoBoundary;
 
-                applyCylinderFreeSlip(i, NTheta, theta, uhalf, vhalf);
+                applyCylinderFreeSlip(i, NTheta, Nboundary, theta, uhalf, vhalf);
 
                 // No-slip Cylinder
                 //uhalf[i] = 0.0;
@@ -3969,7 +3917,9 @@ int main()
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Time integration corrector for fluid to n+1/2
 // -----------------------------------------------------------------------------------------------------------------------------
-
+            #ifdef _OPENMP
+            #pragma omp parallel for schedule(static)
+            #endif
             for (int i = Nboundary; i < NfluidEnd; i++)
             {
                 rhonew[i] = rho[i]+drhodthalf[i]*dt;
@@ -3990,7 +3940,9 @@ int main()
 // -----------------------------------------------------------------------------------------------------------------------------
 // Compute Time integration corrector for boundary to n+1
 // -----------------------------------------------------------------------------------------------------------------------------
-
+            #ifdef _OPENMP
+            #pragma omp parallel for schedule(static)
+            #endif
             for (int i = 0; i < Nboundary; ++i)
             {
                 xnew[i] = xhalf[i];
@@ -4003,6 +3955,7 @@ int main()
                     Nboundary,
                     NfluidEnd,
                     NTheta,
+                    mdbcNeighbours,
 
                     xnew,
                     ynew,
@@ -4023,7 +3976,7 @@ int main()
 
                 rhonew[i] = rhoBoundary;
 
-                applyCylinderFreeSlip(i, NTheta, theta, unew, vnew);
+                applyCylinderFreeSlip(i, NTheta, Nboundary, theta, unew, vnew);
 
                 // No-slip Cylinder
                 //uhalf[i] = 0.0;
@@ -4044,9 +3997,9 @@ int main()
                 NfluidEnd,
                 Nr,
                 NrTotal,
-                kernel);
+                kernel, riemannNeighbours);
 
-            updateCylinderSupport(
+            /*updateCylinderSupport(
                 NTheta,
                 Nboundary,
                 NsupportStart,
@@ -4054,7 +4007,7 @@ int main()
                 theta,
                 unew,
                 vnew,
-                rhonew);
+                rhonew);*/
  
                 
 
@@ -4090,7 +4043,7 @@ int main()
                 //unew[i] = 0.0;
                 //vnew[i] = 0.0;
 
-                applyCylinderFreeSlip(i, NTheta, theta, unew, vnew);
+                applyCylinderFreeSlip(i, NTheta, Nboundary, theta, unew, vnew);
                 xnew[i] = xhalf[i];
                 ynew[i] = yhalf[i];
 

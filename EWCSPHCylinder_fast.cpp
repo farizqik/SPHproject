@@ -1,6 +1,3 @@
-// Optimized for FIXED positions and FIXED smoothing lengths.
-// Rebuild neighbours if either changes. Gaussian retains its full support.
-// Build: g++ -O3 -DNDEBUG -std=c++17 -fopenmp EWCSPHCylinder_fast.cpp -o sph_fast
 #include <algorithm>
 #include<iostream>
 #include<cmath>
