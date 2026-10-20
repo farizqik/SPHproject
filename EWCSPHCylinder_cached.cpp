@@ -24,7 +24,9 @@ using namespace std;
 const double dtMax = 0.001;
 const double dtMin = 1.0e-8;
 const double CFL = 0.3;
-const double Totaltime = 2.0;
+const double OutputTimeInterval = 0.025;
+const double Totaltime = 2.0 + OutputTimeInterval;
+
 
 // ------------------------------------------------------------
 // Geometry
@@ -62,7 +64,7 @@ const double c0 = 20.0*inletVelocity;
 const double gammaEOS = 7.0;
 const double B = c0*c0*rho0/gammaEOS;
 
-const double viscosity = 1.0e-5;
+const double viscosity = 1.0e-6;
 const double tvis = 0.01;
 const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder;
@@ -71,7 +73,7 @@ const double R = 10*Dcylinder;
 const double dr0 = sqrt(2.0*viscosity*tvis);
 //const double dr0 = Dcylinder/10.0;
 //double drhodtexact = -100;
-const double alphaAV = 0.0001;
+const double alphaAV = 0.0;
 const double deltadifussion = 0.0;
 
 
@@ -79,6 +81,10 @@ const int NsupportLayers = 3;
 const int Nr = 200;
 const int Nbuffer = 6;      // open-boundary buffer rings
 int NrTotal = Nr + Nbuffer;
+
+//int NTheta =  round(2*PI*r0/dr0);
+int NTheta =  360;
+double dTheta0 = 2*PI/NTheta;
 
 //double Reynolds = inletVelocity*Dcylinder/viscosity;
 
@@ -1387,11 +1393,11 @@ void PotentialFlowComparison(
             + v[j]*ty;
 
 
-        /*const double tauWall =
-            mu*(utFluid - utWall)/dr;*/
-
         const double tauWall =
-            0.0;
+            mu*(utFluid - utWall)/dr;
+
+        /*const double tauWall =
+            0.0;*/
 
 
         const double dFxViscousSPH =
@@ -2222,16 +2228,7 @@ int main()
     cout << "================================" << endl;
     cout << "" << endl;
 
-
-
-
-    
-    //int NTheta =  round(2*PI*r0/dr0);
-    int NTheta =  360;
-    double dTheta0 = 2*PI/NTheta;
-
-
-    
+   
 
     // ------------------------------------------------------------
     // Generate folder
@@ -3105,7 +3102,7 @@ int main()
             + ".csv");
 
         potentialFlowLocalFile
-            << setprecision(17);
+            << setprecision(9);
 
 
         potentialFlowLocalFile
@@ -3353,9 +3350,10 @@ int main()
             #endif
             for (int i = 0; i < Nparticles; i++)
             {
-                pressure[i] = B*(pow(rho[i]/rho0,gammaEOS)-1.0);                         
+                pressure[i] = B*(pow(rho[i]/rho0,gammaEOS)-1.0); 
             }
 
+            if (t >= nextOutputTime - 1e-12)
             PotentialFlowComparison(
                 t,
                 n,
@@ -3693,7 +3691,7 @@ int main()
            
                 file.close();
                 
-                nextOutputTime += 0.01;
+                nextOutputTime += OutputTimeInterval;
             }
 
 // -----------------------------------------------------------------------------------------------------------------------------
