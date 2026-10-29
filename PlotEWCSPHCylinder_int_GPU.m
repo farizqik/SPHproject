@@ -1,4 +1,4 @@
-function PlotEWCSPHCylinder_int_GPU_controls_abs(simulationFolder)
+function PlotEWCSPHCylinder_int_GPU_controls_abs_particles(simulationFolder)
 
 %% =========================================================
 % DATASET SELECTION
@@ -821,6 +821,10 @@ tangentialTab = uitab( ...
     tabGroup, ...
     'Title','Tangential vs Radius');
 
+particleTab = uitab( ...
+    tabGroup, ...
+    'Title','Particle Distribution');
+
 % =========================================================
 % FLOW FIELD TAB -- SPH VS ANALYTICAL POTENTIAL FLOW
 % =========================================================
@@ -1450,6 +1454,53 @@ box(axTangential,'on');
 xlabel(axTangential,'Absolute tangential velocity |u_\theta| (m/s)');
 ylabel(axTangential,'Distance from cylinder surface, r - r_0 (m)');
 title(axTangential,'Absolute tangential velocity along a radial line');
+
+%% =========================================================
+% PARTICLE DISTRIBUTION (FIXED EULERIAN GRID)
+% ==========================================================
+% Only draw once: particle coordinates and categories do not change.
+% Show EVERY particle from the first frame; no interpolation/subsampling.
+axParticles = axes(particleTab,'Position',[0.09 0.17 0.80 0.70]);
+hold(axParticles,'on');
+particleGroups = {boundary,fluid,buffer,innerBoundary};
+particleNames = {'Cylinder wall','Physical fluid','Open-boundary buffer','Inner support'};
+particleColors = [0.10 0.10 0.10; ...
+                  0.13 0.47 0.85; ...
+                  0.89 0.44 0.12; ...
+                  0.55 0.36 0.72];
+particleHandles = gobjects(0);
+particleLabels = {};
+for particleGroupIndex = 1:numel(particleGroups)
+    currentRows = particleGroups{particleGroupIndex};
+    if ~any(currentRows)
+        continue;
+    end
+    % Smaller dots make the true resolution visible even on dense rings.
+    particleHandles(end+1) = scatter(axParticles, ...
+        firstFrame(currentRows,1),firstFrame(currentRows,2), ...
+        9,particleColors(particleGroupIndex,:),'filled', ...
+        'MarkerFaceAlpha',0.85,'MarkerEdgeColor','none'); %#ok<AGROW>
+    particleLabels{end+1} = sprintf('%s (%d)', ...
+        particleNames{particleGroupIndex},nnz(currentRows)); %#ok<AGROW>
+end
+axis(axParticles,'equal');
+xlim(axParticles,xLimits);
+ylim(axParticles,yLimits);
+xlabel(axParticles,'x (m)');
+ylabel(axParticles,'y (m)');
+title(axParticles,sprintf('Particle distribution | Total: %d | N_{\theta}: %d', ...
+    numberOfParticles,nTheta));
+box(axParticles,'on');
+grid(axParticles,'on');
+if ~isempty(particleHandles)
+    legend(axParticles,particleHandles,particleLabels, ...
+        'Location','eastoutside','Interpreter','none');
+end
+uicontrol(particleTab,'Style','text', ...
+    'String','Fixed Eulerian particle positions (all particles; not updated with time)', ...
+    'Units','normalized','Position',[0.09 0.055 0.83 0.065], ...
+    'BackgroundColor','w','HorizontalAlignment','center');
+
 
 %% =========================================================
 

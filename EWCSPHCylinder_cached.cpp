@@ -42,8 +42,6 @@ const double PI = 3.14159265358979323846;
 const double g = 9.81;
 const double rho0 = 1000.0;
 
-const double velcoefX = 0.1;
-const double velcoefY = 0.0;
 
 const double inletVelocity = 0.1;  // m/s
 
@@ -57,23 +55,24 @@ const double inletVelocityX =
 const double inletVelocityY =
     inletVelocity*sin(flowAngle);
 
-//const double c0 = 10.0*sqrt(g*(waterheight));
-
 const double c0 = 20.0*inletVelocity;
 
 const double gammaEOS = 7.0;
 const double B = c0*c0*rho0/gammaEOS;
 
-const double viscosity = 1.0e-6;
+const double viscosity = 0*1.0e-5;
+const double viscdr0 = 1.0e-5;
 const double tvis = 0.01;
 const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder;
 const double R = 10*Dcylinder;
 
-const double dr0 = sqrt(2.0*viscosity*tvis);
-//const double dr0 = Dcylinder/10.0;
-//double drhodtexact = -100;
-const double alphaAV = 0.0;
+const double dr0 = sqrt(2.0*viscdr0*tvis);
+
+const double alphaAV = 0.01;
+
+const double betaAV = 0.0;
+
 const double deltadifussion = 0.0;
 
 
@@ -86,7 +85,7 @@ int NrTotal = Nr + Nbuffer;
 int NTheta =  360;
 double dTheta0 = 2*PI/NTheta;
 
-//double Reynolds = inletVelocity*Dcylinder/viscosity;
+vector<double> hlist = {2.0};
 
 
 string kernel; 
@@ -384,293 +383,238 @@ double calculateDt(int Nboundary,
     }
 
 
+
 // --------------------------------------------------
-// Compute the interaction between particle i and j
+// Cached particle geometry
 // --------------------------------------------------
-void accumulateInteraction(
+struct CachedPair
+{
+    int j;
+
+    double rx, ry, r2;
+    double hi, hbar;
+
+    double gradX, gradY;
+    double gradXi, gradYi;
+    double gradXj, gradYj;
+
+    double gradAVX, gradAVY;
+
+    double diffusionGeo;
+    double viscGeo;
+};
+
+using CachedPairs = vector<vector<CachedPair>>;
+
+
+// --------------------------------------------------
+// Calculate and cache geometry once
+// --------------------------------------------------
+CachedPairs makePairCache(
+    const NeighbourLists& neighbours,
+    const vector<double>& x,
+    const vector<double>& y,
+    const vector<double>& h,
+    int first,
+    int last,
+    const string& kernel)
+{
+    CachedPairs cache(neighbours.size());
+
+    for (int i = first; i < last; ++i)
+    {
+        cache[i].reserve(neighbours[i].size());
+
+        for (int j : neighbours[i])
+        {
+            const double rx = x[i] - x[j];
+            const double ry = y[i] - y[j];
+            const double r2 = rx*rx + ry*ry;
+
+            if (r2 < 1e-14)
+                continue;
+
+            const double hi = h[i];
+            const double hj = h[j];
+            const double hmax = max(hi, hj);
+
+            if ((kernel == "cubic" ||
+                kernel == "wendland") &&
+                r2 > 4.0*hmax*hmax)
+                continue;
+
+            const double rr = sqrt(r2);
+            const double dirX = rx/rr;
+            const double dirY = ry/rr;
+
+            KernelResult a{}, b{};
+
+            if (kernel == "gaussian")
+            {
+                a = gaussian(rr/hi, hi, dirX, dirY);
+                b = gaussian(rr/hj, hj, dirX, dirY);
+            }
+            else if (kernel == "cubic")
+            {
+                a = cubicSpline(rr/hi, hi, dirX, dirY);
+                b = cubicSpline(rr/hj, hj, dirX, dirY);
+            }
+            else if (kernel == "wendland")
+            {
+                a = Wendland(rr/hi, hi, dirX, dirY);
+                b = Wendland(rr/hj, hj, dirX, dirY);
+            }
+            else
+            {
+                continue;
+            }
+
+            const double hbar = 0.5*(hi + hj);
+
+            const double gradAVX =
+                0.5*(a.dWeightX + b.dWeightX);
+
+            const double gradAVY =
+                0.5*(a.dWeightY + b.dWeightY);
+
+            // Geometry-only diffusion term
+            const double diffusionGeo =
+                (rx*a.dWeightX + ry*a.dWeightY)
+                /(r2 + 0.01*hi*hi);
+
+            // Geometry-only viscosity term
+            const double viscGeo =
+                (rx*gradAVX + ry*gradAVY)
+                /(r2 + 0.01*hbar*hbar);
+
+            cache[i].push_back({
+                j,
+                rx, ry, r2,
+                hi, hbar,
+                a.dWeightX, a.dWeightY,
+                -a.dWeightX, -a.dWeightY,
+                b.dWeightX, b.dWeightY,
+                gradAVX, gradAVY,
+                diffusionGeo, viscGeo
+            });
+        }
+    }
+
+    return cache;
+}
+
+
+// --------------------------------------------------
+// Single particle interaction formulation
+// --------------------------------------------------
+inline void accumulateInteraction(
     int i,
-    int j,
-    const vector<double>& xs,
-    const vector<double>& ys,
+    const CachedPair& p,
     const vector<double>& us,
     const vector<double>& vs,
     const vector<double>& rhos,
     const vector<double>& ps,
     double Vj,
-    double mj,
-    double hi,
-    double hj,
-    const string& kernel,
     double& drhoAcc,
     double& duAcc,
     double& dvAcc)
 {
-    double rx = xs[i] - xs[j];
-    double ry = ys[i] - ys[j];
-    double r2 = rx*rx + ry*ry;
+    const int j = p.j;
 
-    double hmax = max(hi,hj);
+    const double du = us[i] - us[j];
+    const double dv = vs[i] - vs[j];
 
-    if ((kernel == "cubic" || kernel == "wendland") &&
-        r2 > 4.0*hmax*hmax)
-    {
-        return;
-    }
-
-    if (r2 < 1e-14)
-    {
-        return;
-    }
-
-    double r = sqrt(r2);
-    double qi = r/hi;
-    double qj = r/hj;
-    double dirX = rx/r;
-    double dirY = ry/r;
-
-    KernelResult result;
-    KernelResult result_i;
-    KernelResult result_j;
-
-    if (kernel == "gaussian")
-    {
-        result = gaussian(qi, hi, dirX, dirY);
-        result_i = {result.Weight, -result.dWeightX, -result.dWeightY};
-        result_j = gaussian(qj, hj, dirX, dirY);
-    }
-        
-    else if (kernel == "cubic")
-    {
-        result = cubicSpline(qi, hi, dirX, dirY);
-        result_i = {result.Weight, -result.dWeightX, -result.dWeightY};
-        result_j = cubicSpline(qj, hj, dirX, dirY);
-    }
-
-    else if (kernel == "wendland")
-    {
-        result = Wendland(qi, hi, dirX, dirY);
-        result_i = {result.Weight, -result.dWeightX, -result.dWeightY};
-        result_j = Wendland(qj, hj, dirX, dirY);
-    }
-    else
-    {
-        return;
-    }
-        
-
-    double gradX = result.dWeightX;
-    double gradY = result.dWeightY;
-
-    double gradXi = result_i.dWeightX;
-    double gradYi = result_i.dWeightY;
-
-    double gradXj = result_j.dWeightX;
-    double gradYj = result_j.dWeightY;
-
-
-
-    double du = us[i] - us[j];
-    double dv = vs[i] - vs[j];
-
-    double hbar = 0.5*(hi + hj);
-    double rhoij = 0.5*(rhos[i] + rhos[j]);
-
-    double gradAVX = 0.5*(gradXj - gradXi);
-    double gradAVY = 0.5*(gradYj - gradYi);
+    const double rhoij =
+        0.5*(rhos[i] + rhos[j]);
 
     // --------------------------------------------------
     // Artificial viscosity
     // --------------------------------------------------
+    const double vijrij =
+        du*p.rx + dv*p.ry;
 
-    double vijrij = du*rx + dv*ry;
     double Piij = 0.0;
 
     if (vijrij < 0.0)
     {
-        double muij =
-            hbar*vijrij/(r2 + 0.01*hbar*hbar);
+        const double muij =
+            p.hbar*vijrij/
+            (p.r2 + 0.01*p.hbar*p.hbar);
 
         Piij =
-            -alphaAV*c0*muij/rhoij;
+            -alphaAV*c0*muij/rhoij
+            + betaAV*muij*muij/rhoij;
     }
 
-
-    double velocityDotGradient =
-    us[i]*gradX
-    + vs[i]*gradY;
-
-    double relativeVelocityDotGradient =
-        du*gradXj
-        + dv*gradYj;
-
-    double diffusion =
-        2.0*deltadifussion*hi*c0*Vj
-        *(rhos[i]-rhos[j])
-        *(rx*gradX + ry*gradY)
-        /(r2 + 0.01*hi*hi);
-
+    // --------------------------------------------------
     // Eulerian continuity
+    // --------------------------------------------------
+    const double velocityDotGradient =
+        us[i]*p.gradX + vs[i]*p.gradY;
+
+    const double relativeVelocityDotGradient =
+        du*p.gradXj + dv*p.gradYj;
+
+    const double diffusion =
+        2.0*deltadifussion*p.hi*c0*Vj
+        *(rhos[i] - rhos[j])
+        *p.diffusionGeo;
+
     drhoAcc +=
         -Vj*(rhos[j]-rhos[i])*velocityDotGradient
-        + rhos[i]*Vj*relativeVelocityDotGradient
-        + diffusion;
+        +rhos[i]*Vj*relativeVelocityDotGradient
+        +diffusion;
 
-
-    // Symmetric pressure + artificial viscosity
-    double pressureTerm_i =
+    // --------------------------------------------------
+    // Symmetric pressure term
+    // --------------------------------------------------
+    const double pressureTerm_i =
         ps[i]/(rhos[j]*rhos[i]);
 
-    double pressureTerm_j =
+    const double pressureTerm_j =
         ps[j]/(rhos[j]*rhos[i]);
 
+    // --------------------------------------------------
     // Eulerian momentum
+    // --------------------------------------------------
     duAcc -=
         Vj*(us[j]-us[i])*velocityDotGradient
-        + Vj*rhos[j]*(pressureTerm_i*gradXj-pressureTerm_j*gradXi) 
-        + Vj*rhos[j]*Piij*gradAVX;
+        +Vj*rhos[j]*
+            (pressureTerm_i*p.gradXj
+            -pressureTerm_j*p.gradXi)
+        +Vj*rhos[j]*Piij*p.gradAVX;
 
     dvAcc -=
         Vj*(vs[j]-vs[i])*velocityDotGradient
-        + Vj*rhos[j]*(pressureTerm_i*gradYj-pressureTerm_j*gradYi)
-        + Vj*rhos[j]*Piij*gradAVY;
+        +Vj*rhos[j]*
+            (pressureTerm_i*p.gradYj
+            -pressureTerm_j*p.gradYi)
+        +Vj*rhos[j]*Piij*p.gradAVY;
 
-// --------------------------------------------------
-// Physical viscosity
-// nu * Laplacian(u)
-// --------------------------------------------------
-    /*
-    double rijDotGradW =
-        rx*gradX
-        + ry*gradY;
+    // --------------------------------------------------
+    // Physical viscosity
+    // --------------------------------------------------
+    const double rhoMean =
+        0.5*(rhos[i] + rhos[j]);
 
-    double viscousX =
-        2.0*viscosity*Vj
-        *(us[i]-us[j])
-        *rijDotGradW
-        /r2;
+    const double massJ =
+        rhos[j]*Vj;
 
-    double viscousY =
-        2.0*viscosity*Vj
-        *(vs[i]-vs[j])
-        *rijDotGradW
-        /r2 ;
+    /*const double viscCoeff =
+        2.0*viscosity*massJ
+        *p.viscGeo/rhoMean;
 
-    duAcc += viscousX;
-    dvAcc += viscousY;
-    */
+    duAcc += viscCoeff*du;
+    dvAcc += viscCoeff*dv;*/
 
-    // Both gradients expressed with respect to position x_i.
-    double gradViscX = 0.5*(gradXj - gradXi);
-    double gradViscY = 0.5*(gradYj - gradYi);
-
-    double rijDotGradVisc =
-        rx*gradViscX + ry*gradViscY;
-
-    double rhoMean = 0.5*(rhos[i] + rhos[j]);
-
-    // Assumes Vj is the fixed Eulerian volume:
-    // instantaneous mass represented at j = rho_j * Vj.
-    double massJ = rhos[j]*Vj;
-
-    /*double viscCoeff =
-        4.0*viscosity*massJ*rijDotGradVisc
-        /(rhoMean*r2);*/
-
-    double viscCoeff =
-        2.0*viscosity*massJ*rijDotGradVisc
-        /(rhoMean*(r2 + 0.01*hbar*hbar));
-
-    duAcc += viscCoeff*(us[i] - us[j]);
-    dvAcc += viscCoeff*(vs[i] - vs[j]);
+    const double viscCoeff =
+        2.0*viscosity*massJ*vijrij
+        /((p.r2 + 0.01*p.hbar*p.hbar)*rhoMean);     
+    
+    duAcc += viscCoeff*p.gradAVX;
+    dvAcc += viscCoeff*p.gradAVY;
 }
 
-
-// Geometry-only values, shared by both RK2 evaluations.
-struct CachedPair {
-    int j;
-    double rx, ry, r2, hi, hbar;
-    double gradX, gradY, gradXi, gradYi, gradXj, gradYj;
-    double gradAVX, gradAVY;
-    double diffusionGeometry, viscGeometry;
-};
-using CachedPairs = vector<vector<CachedPair>>;
-
-CachedPairs makePairCache(const NeighbourLists& neighbours,
-                          const vector<double>& x, const vector<double>& y,
-                          const vector<double>& h, int first, int last,
-                          const string& kernel)
-{
-    CachedPairs cache(neighbours.size());
-    for (int i = first; i < last; ++i) {
-        cache[i].reserve(neighbours[i].size());
-        for (int j : neighbours[i]) {
-            const double rx=x[i]-x[j], ry=y[i]-y[j];
-            const double r2=rx*rx+ry*ry;
-            if (r2 < 1e-14) continue;
-            const double hi=h[i], hj=h[j], hmax=max(hi,hj);
-            if ((kernel=="cubic" || kernel=="wendland") && r2 > 4.0*hmax*hmax) continue;
-            const double rr=sqrt(r2), dirX=rx/rr, dirY=ry/rr;
-            KernelResult a{}, b{};
-            if (kernel=="gaussian") {
-                a=gaussian(rr/hi,hi,dirX,dirY);
-                b=gaussian(rr/hj,hj,dirX,dirY);
-            } else if (kernel=="cubic") {
-                a=cubicSpline(rr/hi,hi,dirX,dirY);
-                b=cubicSpline(rr/hj,hj,dirX,dirY);
-            } else if (kernel=="wendland") {
-                a=Wendland(rr/hi,hi,dirX,dirY);
-                b=Wendland(rr/hj,hj,dirX,dirY);
-            } else continue;
-            const double hbar=0.5*(hi+hj);
-            const double avX=0.5*(b.dWeightX+a.dWeightX);
-            const double avY=0.5*(b.dWeightY+a.dWeightY);
-            // result_i is the NEGATIVE of result's gradient in original code.
-            const double diffusionGeo=2.0*deltadifussion*hi*c0
-                *(rx*a.dWeightX+ry*a.dWeightY)/(r2+0.01*hi*hi);
-            const double viscGeo=2.0*viscosity
-                *(rx*avX+ry*avY)/(r2+0.01*hbar*hbar);
-            cache[i].push_back({j, rx,ry,r2,hi,hbar,
-                a.dWeightX,a.dWeightY,-a.dWeightX,-a.dWeightY,
-                b.dWeightX,b.dWeightY,avX,avY,diffusionGeo,viscGeo});
-        }
-    }
-    return cache;
-}
-
-// Numerical terms: densities, velocities and pressures still vary by RK2 stage.
-inline void accumulateCachedInteraction(int i, const CachedPair& p,
-    const vector<double>& us, const vector<double>& vs,
-    const vector<double>& rhos, const vector<double>& ps,
-    double Vj, double& drhoAcc, double& duAcc, double& dvAcc)
-{
-    const int j=p.j;
-    const double du=us[i]-us[j], dv=vs[i]-vs[j];
-    const double rhoij=0.5*(rhos[i]+rhos[j]);
-    const double vijrij=du*p.rx+dv*p.ry;
-    double Piij=0.0;
-    if (vijrij<0.0) {
-        const double muij=p.hbar*vijrij/(p.r2+0.01*p.hbar*p.hbar);
-        Piij=-alphaAV*c0*muij/rhoij;
-    }
-    const double velocityDotGradient=us[i]*p.gradX+vs[i]*p.gradY;
-    const double relativeVelocityDotGradient=du*p.gradXj+dv*p.gradYj;
-    const double diffusion=Vj*(rhos[i]-rhos[j])*p.diffusionGeometry;
-    drhoAcc += -Vj*(rhos[j]-rhos[i])*velocityDotGradient
-            + rhos[i]*Vj*relativeVelocityDotGradient + diffusion;
-    const double pressureTerm_i=ps[i]/(rhos[j]*rhos[i]);
-    const double pressureTerm_j=ps[j]/(rhos[j]*rhos[i]);
-    duAcc -= Vj*(us[j]-us[i])*velocityDotGradient
-           + Vj*rhos[j]*(pressureTerm_i*p.gradXj-pressureTerm_j*p.gradXi)
-           + Vj*rhos[j]*Piij*p.gradAVX;
-    dvAcc -= Vj*(vs[j]-vs[i])*velocityDotGradient
-           + Vj*rhos[j]*(pressureTerm_i*p.gradYj-pressureTerm_j*p.gradYi)
-           + Vj*rhos[j]*Piij*p.gradAVY;
-    const double rhoMean=0.5*(rhos[i]+rhos[j]);
-    const double massJ=rhos[j]*Vj;
-    const double viscCoeff=massJ*p.viscGeometry/rhoMean;
-    duAcc += viscCoeff*(us[i]-us[j]);
-    dvAcc += viscCoeff*(vs[i]-vs[j]);
-}
 
 // ------------------------------------------------------------
 // solve Q in radial function
@@ -2182,6 +2126,8 @@ vector<double> vorticity;
 
 int main()
 {
+    auto start = std::chrono::high_resolution_clock::now();
+    
     #ifdef _OPENMP
     cout << "OpenMP enabled" << endl;
     cout << "Max OpenMP threads: "
@@ -2189,6 +2135,12 @@ int main()
     #else
     cout << "OpenMP disabled" << endl;
     #endif
+
+    cout<<"enter the kernel to be used (gaussian, cubic, wendland): ";
+            cin>>kernel;
+
+    
+    int Nh = hlist.size();
 
     double qAlow = 0.0;
     double qAhigh = 2.0;
@@ -2228,153 +2180,54 @@ int main()
     cout << "================================" << endl;
     cout << "" << endl;
 
-   
+    for (int m = 0; m < Nh; m++)
+    {   
 
-    // ------------------------------------------------------------
-    // Generate folder
-    // ------------------------------------------------------------
-    auto start = std::chrono::high_resolution_clock::now();
+        // ------------------------------------------------------------
+        // Generate folder
+        // ------------------------------------------------------------
+        
+        string foldername = 
+                    "EWCSPHCylindernew2_Ch_" +  to_string(hlist[m]) + "_dr0_" +  to_string(dr0) + "_Nr_" + to_string(Nr) + "_Ntheta_" + to_string(NTheta) + "_Rr0_" + to_string(R/r0)+ "_AV_"+ to_string(alphaAV)+"_difussion_"+ to_string(deltadifussion)+"_visc_"+ to_string(viscosity); 
+                //system(("mkdir -p " + foldername).c_str());
+                filesystem::create_directories(foldername);
 
-    cout<<"enter the kernel to be used (gaussian, cubic, wendland): ";
-        cin>>kernel;
-
-    string foldername = 
-                "EWCSPHCylinder_dr0_" + to_string(dr0) + "_Nr_" + to_string(Nr) + "_Ntheta_" + to_string(NTheta) + "_Rr0_" + to_string(R/r0)+ "_AV_"+ to_string(alphaAV)+"_difussion_"+ to_string(deltadifussion)+"_visc_"+ to_string(viscosity); 
-            //system(("mkdir -p " + foldername).c_str());
-            filesystem::create_directories(foldername);
-
-        // Remove previous CSV output from this exact simulation folder.
-        for (const auto& entry :
-            std::filesystem::directory_iterator(foldername))
-            {
-                if (entry.is_regular_file() &&
-                    entry.path().extension() == ".csv")
+            // Remove previous CSV output from this exact simulation folder.
+            for (const auto& entry :
+                std::filesystem::directory_iterator(foldername))
                 {
-                    std::filesystem::remove(entry.path());
+                    if (entry.is_regular_file() &&
+                        entry.path().extension() == ".csv")
+                    {
+                        std::filesystem::remove(entry.path());
+                    }
                 }
-            }
 
-        cout << "Previous CSV files deleted from: "
-            << foldername << '\n';
-
+            cout << "Previous CSV files deleted from: "
+                << foldername << '\n';
 
 
 
-    // ------------------------------------------------------------
-    // Generate particles
-    // ------------------------------------------------------------
 
-    int i = 0;
+        // ------------------------------------------------------------
+        // Generate particles
+        // ------------------------------------------------------------
 
-
-    // ============================================================
-    // 1. Physical cylinder wall
-    // ============================================================
-
-    double rp = r0;
-
-    for (int k = 0; k < NTheta; ++k)
-    {
-        double thetap = k*dTheta0;
-
-        double xp = rp*cos(thetap);
-        double yp = rp*sin(thetap);
-
-        r.push_back(rp);
-        theta.push_back(thetap);
-
-        x.push_back(xp);
-        y.push_back(yp);
-
-        /*cout << "ID: " << i
-            << "  Type: Boundary"
-            << "  r: " << rp
-            << "  theta: " << thetap
-            << "  x: " << xp
-            << "  y: " << yp
-            << endl;*/
-
-        i++;
-    }
-
-    
-
-    // ============================================================
-    // 2. Interior support rings
-    // ============================================================
-
-    int NsupportStart = i;
-
-    for (int layer = 1;
-        layer <= NsupportLayers;
-        ++layer)
-    {
-
-        double rpSupport = 2.0*r0 - (Bpolar*(pow(qA,layer)-1.0)+r0);
-
-        if (rpSupport <= 0.0)
-        {
-            throw runtime_error(
-                "NsupportLayers too large: "
-                "support ring reaches r <= 0."
-            );
-        }
-
-        for (int k = 0;
-            k < NTheta;
-            ++k)
-        {
-            double thetap =
-                k*dTheta0;
-
-            double xp =
-                rpSupport*cos(thetap);
-
-            double yp =
-                rpSupport*sin(thetap);
-
-            r.push_back(rpSupport);
-            theta.push_back(thetap);
-
-            x.push_back(xp);
-            y.push_back(yp);
-
-            /*cout << "ID: " << i
-                << "  Type: Support"
-                << "  Layer: " << layer
-                << "  r: " << rpSupport
-                << "  theta: " << thetap
-                << "  x: " << xp
-                << "  y: " << yp
-                << endl;*/
-
-            i++;
-        }
-    }
+        int i = 0;
 
 
-    int Nboundary = i;
+        // ============================================================
+        // 1. Physical cylinder wall
+        // ============================================================
 
-    // ============================================================
-    // 3. Fluid + outer buffer rings
-    // ============================================================
-
-    for (int ir = 1; ir <= NrTotal; ++ir)
-    {
-        double rp =
-            Bpolar*(pow(qA,ir)-1.0)
-            + r0;
+        double rp = r0;
 
         for (int k = 0; k < NTheta; ++k)
         {
-            double thetap =
-                k*dTheta0;
+            double thetap = k*dTheta0;
 
-            double xp =
-                rp*cos(thetap);
-
-            double yp =
-                rp*sin(thetap);
+            double xp = rp*cos(thetap);
+            double yp = rp*sin(thetap);
 
             r.push_back(rp);
             theta.push_back(thetap);
@@ -2383,8 +2236,7 @@ int main()
             y.push_back(yp);
 
             /*cout << "ID: " << i
-                << "  Type: "
-                << ((ir <= Nr) ? "Fluid" : "Buffer")
+                << "  Type: Boundary"
                 << "  r: " << rp
                 << "  theta: " << thetap
                 << "  x: " << xp
@@ -2393,137 +2245,228 @@ int main()
 
             i++;
         }
-    }
 
-
-    // ============================================================
-    // Fluid / buffer bookkeeping
-    // ============================================================
-
-    int NfluidEnd = Nboundary + Nr*NTheta;
-
-    int Nfluid = NfluidEnd - Nboundary;
-
-    int NbaseParticles = i;
-
-    int NbufferParticles = NbaseParticles - NfluidEnd;
-
-    int NsupportParticles = Nboundary - NsupportStart;
-
-    int Nparticles = i;
-
-
-    cout << endl;
-
-    cout << "NTheta            = "
-        << NTheta << endl;
-
-    cout << "Nboundary         = "
-        << Nboundary << endl;
-
-    cout << "Nfluid            = "
-        << Nfluid << endl;
-
-    cout << "NbufferParticles  = "
-        << NbufferParticles << endl;
-
-    cout << "NsupportLayers    = "
-        << NsupportLayers << endl;
-
-    cout << "NsupportParticles = "
-        << NsupportParticles << endl;
-
-    cout << "NsupportStart     = "
-        << NsupportStart << endl;
-
-    cout << "Nparticles        = "
-        << Nparticles << endl;
-
-
-    vector<double> hlist = {2.0};
-    int Nh = hlist.size();
-
-    // ------------------------------------------------------------
-    // Save simulation constants for post-processing
-    // ------------------------------------------------------------
-    {
-        string constantsFilename = foldername + "/SimulationConstants.csv";
-        ofstream constantsFile(constantsFilename);
-
-        constantsFile << setprecision(17);
-        constantsFile << "Name,Value" << endl;
-
-        constantsFile << "dtMax," << dtMax << endl;
-        constantsFile << "dtMin," << dtMin << endl;
-        constantsFile << "CFL," << CFL << endl;
-        constantsFile << "Totaltime," << Totaltime << endl;
-        //constantsFile << "waterheight," << waterheight << endl;
-        constantsFile << "PI," << PI << endl;
-        constantsFile << "g," << g << endl;
-        constantsFile << "rho0," << rho0 << endl;
-        constantsFile << "velcoefX," << velcoefX << endl;
-        constantsFile << "velcoefY," << velcoefY << endl;
-        constantsFile << "inletVelocity," << inletVelocity << endl;
-        constantsFile << "flowAngleRad," << flowAngle << endl;
-        constantsFile << "flowAngleDeg," << flowAngle*180.0/PI << endl;
-        constantsFile << "inletVelocityX," << inletVelocityX << endl;
-        constantsFile << "inletVelocityY," << inletVelocityY << endl;
-        constantsFile << "c0," << c0 << endl;
-        constantsFile << "gammaEOS," << gammaEOS << endl;
-        constantsFile << "B," << B << endl;
-        constantsFile << "viscosity," << viscosity << endl;
-        constantsFile << "tvis," << tvis << endl;
-        constantsFile << "Dcylinder," << Dcylinder << endl;
-        constantsFile << "r0," << r0 << endl;
-        constantsFile << "R," << R << endl;
-        constantsFile << "dr0," << dr0 << endl;
-        constantsFile << "alphaAV," << alphaAV << endl;
-        constantsFile << "deltadifussion," << deltadifussion << endl;
-        constantsFile << "Nr," << Nr << endl;
-        constantsFile << "Nbuffer," << Nbuffer << endl;
-        constantsFile << "NrTotal," << NrTotal << endl;
-        constantsFile << "NTheta," << NTheta << endl;
-        constantsFile << "dTheta0," << dTheta0 << endl;
-        constantsFile << "qA," << qA << endl;
-        constantsFile << "Apolar," << Apolar << endl;
-        constantsFile << "Bpolar," << Bpolar << endl;
-        constantsFile << "Nboundary," << Nboundary << endl;
-        constantsFile << "NfluidEnd," << NfluidEnd << endl;
-        constantsFile << "Nfluid," << Nfluid << endl;
-        constantsFile << "NbufferParticles," << NbufferParticles << endl;
-        constantsFile << "Nparticles," << Nparticles << endl;
         
-        constantsFile << "NparticlesSolver,"
-              << Nparticles << endl;
 
-        constantsFile << "NsupportLayers,"
-                    << NsupportLayers << endl;
+        // ============================================================
+        // 2. Interior support rings
+        // ============================================================
 
-        constantsFile << "NsupportParticles,"
-                    << NsupportParticles << endl;
+        int NsupportStart = i;
 
-        constantsFile << "NsupportStart,"
-                    << NsupportStart << endl;
-
-        // Derived metadata for MATLAB post-processing only
-        constantsFile << "hasCylinder," << (Nboundary > 0 ? 1 : 0) << endl;
-        constantsFile << "Reynolds," << inletVelocity*Dcylinder/viscosity << endl;
-        constantsFile << "kernel," << kernel << endl;
-        constantsFile << "Nh," << Nh << endl;
-
-        for (int ih = 0; ih < Nh; ++ih)
+        for (int layer = 1;
+            layer <= NsupportLayers;
+            ++layer)
         {
-            constantsFile << "hCoefficient_" << ih << "," << hlist[ih] << endl;
+
+            double rpSupport = 2.0*r0 - (Bpolar*(pow(qA,layer)-1.0)+r0);
+
+            if (rpSupport <= 0.0)
+            {
+                throw runtime_error(
+                    "NsupportLayers too large: "
+                    "support ring reaches r <= 0."
+                );
+            }
+
+            for (int k = 0;
+                k < NTheta;
+                ++k)
+            {
+                double thetap =
+                    k*dTheta0;
+
+                double xp =
+                    rpSupport*cos(thetap);
+
+                double yp =
+                    rpSupport*sin(thetap);
+
+                r.push_back(rpSupport);
+                theta.push_back(thetap);
+
+                x.push_back(xp);
+                y.push_back(yp);
+
+                /*cout << "ID: " << i
+                    << "  Type: Support"
+                    << "  Layer: " << layer
+                    << "  r: " << rpSupport
+                    << "  theta: " << thetap
+                    << "  x: " << xp
+                    << "  y: " << yp
+                    << endl;*/
+
+                i++;
+            }
         }
 
-        constantsFile.close();
 
-        cout << "Simulation constants saved to: "
-             << constantsFilename << endl;
-    }
+        int Nboundary = i;
 
-    for (int m = 0; m < Nh; m++)
-    {
+        // ============================================================
+        // 3. Fluid + outer buffer rings
+        // ============================================================
+
+        for (int ir = 1; ir <= NrTotal; ++ir)
+        {
+            double rp =
+                Bpolar*(pow(qA,ir)-1.0)
+                + r0;
+
+            for (int k = 0; k < NTheta; ++k)
+            {
+                double thetap =
+                    k*dTheta0;
+
+                double xp =
+                    rp*cos(thetap);
+
+                double yp =
+                    rp*sin(thetap);
+
+                r.push_back(rp);
+                theta.push_back(thetap);
+
+                x.push_back(xp);
+                y.push_back(yp);
+
+                /*cout << "ID: " << i
+                    << "  Type: "
+                    << ((ir <= Nr) ? "Fluid" : "Buffer")
+                    << "  r: " << rp
+                    << "  theta: " << thetap
+                    << "  x: " << xp
+                    << "  y: " << yp
+                    << endl;*/
+
+                i++;
+            }
+        }
+
+
+        // ============================================================
+        // Fluid / buffer bookkeeping
+        // ============================================================
+
+        int NfluidEnd = Nboundary + Nr*NTheta;
+
+        int Nfluid = NfluidEnd - Nboundary;
+
+        int NbaseParticles = i;
+
+        int NbufferParticles = NbaseParticles - NfluidEnd;
+
+        int NsupportParticles = Nboundary - NsupportStart;
+
+        int Nparticles = i;
+
+
+        cout << endl;
+
+        cout << "NTheta            = "
+            << NTheta << endl;
+
+        cout << "Nboundary         = "
+            << Nboundary << endl;
+
+        cout << "Nfluid            = "
+            << Nfluid << endl;
+
+        cout << "NbufferParticles  = "
+            << NbufferParticles << endl;
+
+        cout << "NsupportLayers    = "
+            << NsupportLayers << endl;
+
+        cout << "NsupportParticles = "
+            << NsupportParticles << endl;
+
+        cout << "NsupportStart     = "
+            << NsupportStart << endl;
+
+        cout << "Nparticles        = "
+            << Nparticles << endl;
+
+
+        
+
+        // ------------------------------------------------------------
+        // Save simulation constants for post-processing
+        // ------------------------------------------------------------
+        {
+            string constantsFilename = foldername + "/SimulationConstants.csv";
+            ofstream constantsFile(constantsFilename);
+
+            constantsFile << setprecision(17);
+            constantsFile << "Name,Value" << endl;
+
+            constantsFile << "dtMax," << dtMax << endl;
+            constantsFile << "dtMin," << dtMin << endl;
+            constantsFile << "CFL," << CFL << endl;
+            constantsFile << "Totaltime," << Totaltime << endl;
+            //constantsFile << "waterheight," << waterheight << endl;
+            constantsFile << "PI," << PI << endl;
+            constantsFile << "g," << g << endl;
+            constantsFile << "rho0," << rho0 << endl;
+            constantsFile << "inletVelocity," << inletVelocity << endl;
+            constantsFile << "flowAngleRad," << flowAngle << endl;
+            constantsFile << "flowAngleDeg," << flowAngle*180.0/PI << endl;
+            constantsFile << "inletVelocityX," << inletVelocityX << endl;
+            constantsFile << "inletVelocityY," << inletVelocityY << endl;
+            constantsFile << "c0," << c0 << endl;
+            constantsFile << "gammaEOS," << gammaEOS << endl;
+            constantsFile << "B," << B << endl;
+            constantsFile << "viscosity," << viscosity << endl;
+            constantsFile << "tvis," << tvis << endl;
+            constantsFile << "Dcylinder," << Dcylinder << endl;
+            constantsFile << "r0," << r0 << endl;
+            constantsFile << "R," << R << endl;
+            constantsFile << "dr0," << dr0 << endl;
+            constantsFile << "alphaAV," << alphaAV << endl;
+            constantsFile << "deltadifussion," << deltadifussion << endl;
+            constantsFile << "Nr," << Nr << endl;
+            constantsFile << "Nbuffer," << Nbuffer << endl;
+            constantsFile << "NrTotal," << NrTotal << endl;
+            constantsFile << "NTheta," << NTheta << endl;
+            constantsFile << "dTheta0," << dTheta0 << endl;
+            constantsFile << "qA," << qA << endl;
+            constantsFile << "Apolar," << Apolar << endl;
+            constantsFile << "Bpolar," << Bpolar << endl;
+            constantsFile << "Nboundary," << Nboundary << endl;
+            constantsFile << "NfluidEnd," << NfluidEnd << endl;
+            constantsFile << "Nfluid," << Nfluid << endl;
+            constantsFile << "NbufferParticles," << NbufferParticles << endl;
+            constantsFile << "Nparticles," << Nparticles << endl;
+            
+            constantsFile << "NparticlesSolver,"
+                << Nparticles << endl;
+
+            constantsFile << "NsupportLayers,"
+                        << NsupportLayers << endl;
+
+            constantsFile << "NsupportParticles,"
+                        << NsupportParticles << endl;
+
+            constantsFile << "NsupportStart,"
+                        << NsupportStart << endl;
+
+            // Derived metadata for MATLAB post-processing only
+            constantsFile << "hasCylinder," << (Nboundary > 0 ? 1 : 0) << endl;
+            constantsFile << "Reynolds," << inletVelocity*Dcylinder/viscosity << endl;
+            constantsFile << "kernel," << kernel << endl;
+            constantsFile << "Nh," << Nh << endl;
+
+            for (int ih = 0; ih < Nh; ++ih)
+            {
+                constantsFile << "hCoefficient_" << ih << "," << hlist[ih] << endl;
+            }
+
+            constantsFile.close();
+
+            cout << "Simulation constants saved to: "
+                << constantsFilename << endl;
+        }
         
         
         double coefh = hlist[m];
@@ -3488,7 +3431,7 @@ int main()
 
                 for (const CachedPair& pair : pairCache[i])
                 {
-                    accumulateCachedInteraction(i, pair,
+                    accumulateInteraction(i, pair,
                         u, v, rho, pressure, Vi[pair.j],
                         drhodt[i], dudt[i], dvdt[i]);
                 }
@@ -3814,7 +3757,7 @@ int main()
 
                 for (const CachedPair& pair : pairCache[i])
                 {
-                    accumulateCachedInteraction(i, pair,
+                    accumulateInteraction(i, pair,
                         uhalf, vhalf, rhohalf, pressurehalf, Vi[pair.j],
                         drhodthalf[i], dudthalf[i], dvdthalf[i]);
                 }

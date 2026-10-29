@@ -10,7 +10,7 @@ close all;
 % ==========================================================
 
 simulationFolder = ...
-    "EWCSPHCylinder_dr0_0.001414_Nr_100_Ntheta_222_Rr0_40.000000";
+    "EWCSPHCylinder_dr0_0.000141_Nr_200_Ntheta_360_Rr0_20.000000_AV_0.000000_difussion_0.000000_visc_0.000001";
 
 filePattern = "particles_hdp_*.csv";
 
