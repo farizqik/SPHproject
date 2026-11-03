@@ -60,7 +60,7 @@ const double c0 = 20.0*inletVelocity;
 const double gammaEOS = 7.0;
 const double B = c0*c0*rho0/gammaEOS;
 
-const double viscosity = 0*1.0e-5;
+const double viscosity = 1.0e-5;
 const double viscdr0 = 1.0e-5;
 const double tvis = 0.01;
 const double Dcylinder = 0.1;
@@ -69,14 +69,14 @@ const double R = 10*Dcylinder;
 
 const double dr0 = sqrt(2.0*viscdr0*tvis);
 
-const double alphaAV = 0.01;
+const double alphaAV = 0.0;
 
 const double betaAV = 0.0;
 
 const double deltadifussion = 0.0;
 
 
-const int NsupportLayers = 3;
+const int NsupportLayers = 4;
 const int Nr = 200;
 const int Nbuffer = 6;      // open-boundary buffer rings
 int NrTotal = Nr + Nbuffer;
@@ -85,7 +85,7 @@ int NrTotal = Nr + Nbuffer;
 int NTheta =  360;
 double dTheta0 = 2*PI/NTheta;
 
-vector<double> hlist = {2.0};
+vector<double> hlist = {1.3};
 
 
 string kernel; 

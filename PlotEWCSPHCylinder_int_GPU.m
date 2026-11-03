@@ -1,4 +1,4 @@
-function PlotEWCSPHCylinder_int_GPU_controls_abs_particles(simulationFolder)
+function EWCSPH_MATLAB_ViscousSinglePlot_v2(simulationFolder,testScenario)
 
 %% =========================================================
 % DATASET SELECTION
@@ -41,6 +41,60 @@ end
 constantNames = strtrim(string(constantCells(2:end,1)));
 
 constantValues = string(constantCells(2:end,2));
+
+% Scenario is chosen by C++ and recorded in SimulationConstants.csv.
+% Optional second argument is retained as a backwards-compatible override.
+metadataKeys = strtrim(string(constantCells(2:end,1)));
+scenarioRow = find(metadataKeys == "testScenario",1);
+wallRow = find(metadataKeys == "boundaryCondition",1);
+
+if ~isempty(scenarioRow)
+    detectedScenario = lower(strtrim(string(constantCells{scenarioRow+1,2})));
+elseif ~isempty(wallRow)
+    detectedWall = lower(strtrim(string(constantCells{wallRow+1,2})));
+    if detectedWall == "no-slip"
+        detectedScenario = "viscous";
+    elseif detectedWall == "free-slip"
+        detectedScenario = "potential";
+    else
+        error('Unsupported boundaryCondition in SimulationConstants.csv: %s',detectedWall);
+    end
+else
+    detectedScenario = "";
+end
+
+if nargin >= 2 && strlength(string(testScenario)) > 0
+    testScenario = lower(string(testScenario));
+    if strlength(detectedScenario) > 0 && testScenario ~= detectedScenario
+        warning('Manual scenario %s differs from C++ metadata %s.', ...
+                testScenario,detectedScenario);
+    end
+elseif strlength(detectedScenario) > 0
+    testScenario = detectedScenario;
+else
+    % Backwards compatibility: older C++ results without scenario metadata.
+    [scenarioSelection,scenarioOK] = listdlg( ...
+        'PromptString','Legacy output: select C++ test scenario:', ...
+        'SelectionMode','single', ...
+        'ListString',{'Impulsively started viscous / no-slip cylinder', ...
+                      'Inviscid / free-slip potential-flow validation'}, ...
+        'InitialValue',1,'ListSize',[430 100]);
+    if ~scenarioOK, return; end
+    if scenarioSelection == 1, testScenario = "viscous";
+    else, testScenario = "potential"; end
+end
+
+if ~ismember(testScenario,["viscous","potential"])
+    error('testScenario must be "viscous" or "potential".');
+end
+isViscousTest = testScenario == "viscous";
+if isViscousTest
+    referenceDescription = 'Uniform initial state (not an exact solution)';
+else
+    referenceDescription = 'Analytical potential flow';
+end
+fprintf('Viewer physical scenario: %s\n',testScenario);
+
 
 % Simulation/reference values: ALL read from C++ metadata.
 
@@ -835,6 +889,11 @@ ax = axes( ...
     flowTab, ...
     'Position',[0.055 0.20 0.36 0.69]);
 
+% In viscous mode use the whole Flow Field tab for the SPH result.
+if isViscousTest
+    ax.Position = [0.09 0.20 0.78 0.69];
+end
+
 axExact = axes( ...
     flowTab, ...
     'Position',[0.545 0.20 0.36 0.69]);
@@ -1028,12 +1087,15 @@ end
 
 %% Precompute the analytical values ONCE (coordinates never move).
 % This avoids reevaluating potential flow for all particles every frame.
-exactFieldsFixed = zeros(numberOfParticles,numberOfCachedFields);
-for fixedColumn = 3:numberOfCachedFields
-    exactFieldsFixed(:,fixedColumn) = potentialFlowField(firstFrame,fixedColumn);
+exactFieldsFixed = [];
+if ~isViscousTest
+    exactFieldsFixed = zeros(numberOfParticles,numberOfCachedFields);
+    for fixedColumn = 3:numberOfCachedFields
+        exactFieldsFixed(:,fixedColumn) = referenceField(firstFrame,fixedColumn);
+    end
+    set(hExactVelocity, 'UData',exactFieldsFixed(arrowRows,6), ...
+        'VData',exactFieldsFixed(arrowRows,7));
 end
-set(hExactVelocity, 'UData',exactFieldsFixed(arrowRows,6), ...
-    'VData',exactFieldsFixed(arrowRows,7));
 
 %% Axes formatting
 for a = [ax axExact]
@@ -1053,15 +1115,26 @@ cExact = colorbar(axExact);
 c.Label.String = colorLabel;
 cExact.Label.String = colorLabel;
 
+% The reference axes remain as hidden graphics handles for backward-
+% compatible callbacks, but no reference figure is shown for no-slip runs.
+if isViscousTest
+    set([hExactFluid,hExactBoundary,hExactVelocity],'Visible','off');
+    axExact.Visible = 'off';
+    cExact.Visible = 'off';
+    ax.Position = [0.09 0.20 0.78 0.69];
+end
+
 [fieldMin,fieldMax] = getComparisonColorLimits(fieldColumn);
 clim(ax,[fieldMin fieldMax]);
 clim(axExact,[fieldMin fieldMax]);
 
 % Keep both spatial views synchronized during zoom/pan.
-linkaxes([ax axExact],'xy');
+if ~isViscousTest
+    linkaxes([ax axExact],'xy');
+end
 
 titleHandle = title(ax,'SPH');
-titleExactHandle = title(axExact,'Analytical potential flow');
+titleExactHandle = title(axExact,referenceDescription);
 
 %% =========================================================
 
@@ -1080,6 +1153,12 @@ titleExactHandle = title(axExact,'Analytical potential flow');
 %   bottom-left  : L2(v)
 
 %   bottom-right : L2(velocity vector)
+
+if isViscousTest
+    l2Tab.Title = 'Potential-flow deviation (not error)';
+    globalComparisonTab.Title = 'Hydrodynamic forces';
+    localComparisonTab.Title = 'Local SPH results';
+end
 
 l2DensityPlot = l2DensityHistory;
 
@@ -1237,6 +1316,17 @@ hCurrentTimeVelocity = xline( ...
     'Current frame', ...
     'HandleVisibility','off');
 
+
+if isViscousTest
+    title(axL2Density,'Density: deviation from C++ reference');
+    title(axL2U,'u: deviation from potential flow');
+    title(axL2V,'v: deviation from potential flow');
+    title(axL2Velocity,'Velocity: deviation from potential flow');
+    ylabel(axL2Density,'Reference difference (not numerical error)');
+    ylabel(axL2U,'Reference difference (not numerical error)');
+    ylabel(axL2V,'Reference difference (not numerical error)');
+    ylabel(axL2Velocity,'Reference difference (not numerical error)');
+end
 
 %% =========================================================
 % GLOBAL COMPARISON TAB
@@ -1448,6 +1538,9 @@ hTangentialSPH = plot(axTangential,NaN,NaN,'o-','LineWidth',1.6, ...
 hold(axTangential,'on');
 hTangentialExact = plot(axTangential,NaN,NaN,'--','LineWidth',1.8, ...
     'DisplayName','Potential flow');
+if isViscousTest
+    hTangentialExact.Visible = 'off';
+end
 legend(axTangential,'Location','best');
 grid(axTangential,'on');
 box(axTangential,'on');
@@ -1919,8 +2012,12 @@ end
         thetaActual = atan2(yp,xp);
         utSPH = -frame(rayRows,6).*sin(thetaActual) + ...
                  frame(rayRows,7).*cos(thetaActual);
-        [uExact,vExact] = potentialFlowVelocity(frame(rayRows,1),frame(rayRows,2));
-        utExact = -uExact.*sin(thetaActual) + vExact.*cos(thetaActual);
+        if isViscousTest
+            utExact = NaN(size(utSPH));
+        else
+            [uExact,vExact] = potentialFlowVelocity(frame(rayRows,1),frame(rayRows,2));
+            utExact = -uExact.*sin(thetaActual) + vExact.*cos(thetaActual);
+        end
         [radialDistance,ord] = sort(rr-innerRadius);
         set(hTangentialSPH,'XData',abs(utSPH(ord)), ...
             'YData',radialDistance);
@@ -1971,7 +2068,9 @@ end
         showVelocityArrows = logical(source.Value);
         if showVelocityArrows
             hVelocity.Visible = 'on';
-            hExactVelocity.Visible = 'on';
+            if ~isViscousTest
+                hExactVelocity.Visible = 'on';
+            end
         else
             hVelocity.Visible = 'off';
             hExactVelocity.Visible = 'off';
@@ -2014,13 +2113,17 @@ end
         meshC = frame(surfaceRows(:),fieldColumn);
         meshC(~isfinite(meshC)) = NaN;
 
-        exactField = exactFieldsFixed(:,fieldColumn);
-        meshCExact = exactField(surfaceRows(:));
-        meshCExact(~isfinite(meshCExact)) = NaN;
+        if ~isViscousTest
+            exactField = exactFieldsFixed(:,fieldColumn);
+            meshCExact = exactField(surfaceRows(:));
+            meshCExact(~isfinite(meshCExact)) = NaN;
+        end
 
         set(hFluid,'CData',reshape(meshC,meshSize));
 
-        set(hExactFluid,'CData',reshape(meshCExact,meshSize));
+        if ~isViscousTest
+            set(hExactFluid,'CData',reshape(meshCExact,meshSize));
+        end
 
         %% Velocity arrow update
 
@@ -2038,8 +2141,10 @@ end
             'UData',arrowU, ...
             'VData',arrowV);
 
-        exactArrowU = exactFieldsFixed(arrowRows,6);
-        exactArrowV = exactFieldsFixed(arrowRows,7);
+        if ~isViscousTest
+            exactArrowU = exactFieldsFixed(arrowRows,6);
+            exactArrowV = exactFieldsFixed(arrowRows,7);
+        end
 
         % Analytical arrows remain unchanged at every timestep.
         % Their UData/VData were set during initialisation.
@@ -2054,12 +2159,16 @@ end
             set(hBoundary, ...
                 'XData',frame(boundary,1), ...
                 'YData',frame(boundary,2));
-            set(hExactBoundary, ...
-                'XData',frame(boundary,1), ...
-                'YData',frame(boundary,2));
+            if ~isViscousTest
+                set(hExactBoundary, ...
+                    'XData',frame(boundary,1), ...
+                    'YData',frame(boundary,2));
+            end
         else
             set(hBoundary,'XData',NaN,'YData',NaN);
-            set(hExactBoundary,'XData',NaN,'YData',NaN);
+            if ~isViscousTest
+                set(hExactBoundary,'XData',NaN,'YData',NaN);
+            end
         end
 
         %% Case-aware title
@@ -2069,13 +2178,20 @@ end
         currentL2vel = l2VelocityHistory(requestedIndex);
 
         if hasCylinder
-            titleHandle.String = sprintf( ...
-                'SPH: %s, Re_D = %.0f, t = %.3f s | L_2 = %.3g', ...
-                char(parameterLabels(fieldColumn-2)),reynoldsNumber, ...
-                time(requestedIndex),currentL2vel);
-            titleExactHandle.String = sprintf( ...
-                'Potential flow: %s | angle = %.1f deg', ...
-                char(parameterLabels(fieldColumn-2)),flowAngleDeg);
+            if isViscousTest
+                titleHandle.String = sprintf('No-slip SPH: %s, Re = %.0f, t = %.3f s', ...
+                    char(parameterLabels(fieldColumn-2)),reynoldsNumber,time(requestedIndex));
+                titleExactHandle.String = sprintf('Initial uniform reference: %s', ...
+                    char(parameterLabels(fieldColumn-2)));
+            else
+                titleHandle.String = sprintf( ...
+                    'SPH: %s, Re_D = %.0f, t = %.3f s | L_2 = %.3g', ...
+                    char(parameterLabels(fieldColumn-2)),reynoldsNumber, ...
+                    time(requestedIndex),currentL2vel);
+                titleExactHandle.String = sprintf( ...
+                    'Potential flow: %s | angle = %.1f deg', ...
+                    char(parameterLabels(fieldColumn-2)),flowAngleDeg);
+            end
         else
             titleHandle.String = sprintf( ...
                 'SPH: %s, t = %.3f s | L_2 = %.3g', ...
@@ -2284,8 +2400,9 @@ end
 
         c.Label.String = ...
             colorLabels(selectedIndex);
-        cExact.Label.String = ...
-            colorLabels(selectedIndex);
+        if ~isViscousTest
+            cExact.Label.String = colorLabels(selectedIndex);
+        end
 
         setFieldColormap;
 
@@ -2293,7 +2410,9 @@ end
             getComparisonColorLimits(fieldColumn);
 
         clim(ax,[newFieldMin newFieldMax]);
-        clim(axExact,[newFieldMin newFieldMax]);
+        if ~isViscousTest
+            clim(axExact,[newFieldMin newFieldMax]);
+        end
 
         currentState = guidata(fig);
 
@@ -2381,8 +2500,12 @@ end
 
             % Use more of the figure area for the exported animation.
 
-            ax.Position = [0.045 0.08 0.40 0.84];
-            axExact.Position = [0.545 0.08 0.40 0.84];
+            if isViscousTest
+                ax.Position = [0.09 0.08 0.78 0.84];
+            else
+                ax.Position = [0.045 0.08 0.40 0.84];
+                axExact.Position = [0.545 0.08 0.40 0.84];
+            end
 
             open(writer);
 
@@ -2841,6 +2964,41 @@ end
 
         cla(axGlobalValue);
         cla(axGlobalError);
+        if isViscousTest
+            switch globalGroupMenu.Value
+                case 1, fcols = ["FxPressureSPH","FxViscousSPH","FxSPH"]; ylabelText = 'F_x (N/m)';
+                case 2, fcols = ["FyPressureSPH","FyViscousSPH","FySPH"]; ylabelText = 'F_y (N/m)';
+                case 3, fcols = ["FPressureSPH","FViscousSPH","FSPH"]; ylabelText = '|F| (N/m)';
+                case 4, fcols = ["CDPressureSPH","CDViscousSPH","CDSPH"]; ylabelText = 'C_D';
+                case 5, fcols = ["CLPressureSPH","CLViscousSPH","CLSPH"]; ylabelText = 'C_L';
+                otherwise, fcols = ["CFPressureSPH","CFViscousSPH","CFSPH"]; ylabelText = 'C_F';
+            end
+            hold(axGlobalValue,'on');
+            for jj = 1:numel(fcols)
+                plot(axGlobalValue,globalComparison.t,globalComparison.(fcols(jj)), ...
+                    'LineWidth',1.4,'DisplayName',char(fcols(jj)));
+            end
+            currentState = guidata(fig);
+            if isempty(currentState), viewingTime = time(1);
+            else, viewingTime = time(currentState.index); end
+            hGlobalCurrentTimeValue = xline(axGlobalValue,viewingTime,':', ...
+                'Current frame','HandleVisibility','off');
+            hGlobalCurrentTimeError = gobjects(1);
+            xlabel(axGlobalValue,'Time (s)'); ylabel(axGlobalValue,ylabelText);
+            title(axGlobalValue,'SPH pressure / viscous / total');
+            grid(axGlobalValue,'on'); legend(axGlobalValue,'Location','best');
+            hold(axGlobalValue,'off');
+            axis(axGlobalError,[0 1 0 1]); axis(axGlobalError,'off');
+            text(axGlobalError,0.05,0.7, ...
+                {'Viscous no-slip test','No exact force time-history in CSV.', ...
+                 'Potential-flow force differences are not errors.', ...
+                 'Wall viscous traction remains approximate.'}, ...
+                'Units','normalized','FontSize',11,'VerticalAlignment','top');
+            sgtitle(globalComparisonTab,sprintf('Viscous startup | Re = %.4g | h/dp = %.4g', ...
+                reynoldsNumber,hCoefficient));
+            globalComparisonInfo.String = sprintf('%d solver samples',height(globalComparison));
+            return;
+        end
         axis(axGlobalValue,'on');
         axis(axGlobalError,'on');
         hold(axGlobalValue,'on');
@@ -3067,6 +3225,35 @@ end
             titleSuffix = sprintf( ...
                 'at \theta = %.6g deg, layer %d', ...
                 thetaDegSelected,layer);
+        end
+
+        if isViscousTest
+            % Local C++ "Exact" columns are potential-flow values, not a
+            % solution to viscous startup. Display numerical SPH data only.
+            if groupIndex == 26
+                axis(axLocalValue,[0 1 0 1]); axis(axLocalValue,'off');
+                text(axLocalValue,0.05,0.7, ...
+                    'C++ potential-flow error norm is not a viscous-flow error.', ...
+                    'Units','normalized','FontSize',11);
+            else
+                varToPlot = names(1);
+                plot(axLocalValue,xData,localTable.(varToPlot), ...
+                    'LineWidth',1.5,'DisplayName',char(varToPlot));
+            end
+            xlabel(axLocalValue,xLabelText);
+            ylabel(axLocalValue,yText);
+            title(axLocalValue,sprintf('Numerical SPH: %s',titleText));
+            grid(axLocalValue,'on'); box(axLocalValue,'on');
+            if groupIndex ~= 26, legend(axLocalValue,'Location','best'); end
+            axis(axLocalError,[0 1 0 1]); axis(axLocalError,'off');
+            text(axLocalError,0.05,0.75, ...
+                {'No viscous analytical solution supplied.', ...
+                 'C++ Exact/error columns represent potential flow.', ...
+                 'Use SPH profiles and independent benchmark comparisons.'}, ...
+                'Units','normalized','VerticalAlignment','top','FontSize',11);
+            sgtitle(localComparisonTab,sprintf('Viscous startup: %s %s',titleText,titleSuffix));
+            hold(axLocalValue,'off'); hold(axLocalError,'off');
+            return;
         end
 
         % ------------------------------------------------------
@@ -3437,8 +3624,18 @@ end
         paths = stream2(streamX,streamY,gridU,gridV,seedX,seedY,[0.10 4000]);
         hStreamlines = drawStreamlinePaths(ax,paths);
 
+        % No second reference field is drawn in the viscous scenario.
+        if isViscousTest
+            return;
+        end
+
         % -------- analytical potential-flow streamline field --------
-        [gridUExact,gridVExact] = potentialFlowVelocity(streamX,streamY);
+        if isViscousTest
+            gridUExact = referenceUx*ones(size(streamX));
+            gridVExact = referenceUy*ones(size(streamY));
+        else
+            [gridUExact,gridVExact] = potentialFlowVelocity(streamX,streamY);
+        end
         gridUExact(streamMask) = NaN;
         gridVExact(streamMask) = NaN;
 
@@ -3497,11 +3694,17 @@ end
         end
     end
 
-    function exactField = potentialFlowField(frame,column)
+    function exactField = referenceField(frame,column)
         xq = frame(:,1);
         yq = frame(:,2);
-        [uExact,vExact] = potentialFlowVelocity(xq,yq);
-        speedExact = hypot(uExact,vExact);
+        if isViscousTest
+            uExact = referenceUx*ones(size(xq));
+            vExact = referenceUy*ones(size(xq));
+            speedExact = referenceSpeed*ones(size(xq));
+        else
+            [uExact,vExact] = potentialFlowVelocity(xq,yq);
+            speedExact = hypot(uExact,vExact);
+        end
 
         % Bernoulli gauge pressure with p_inf = 0.
         pExact = 0.5*referenceDensity.*(referenceSpeed^2-speedExact.^2);
@@ -3543,7 +3746,10 @@ end
         end
 
         [fieldMinLocal,fieldMaxLocal] = getColorLimits(column);
-        exactValues = potentialFlowField(firstFrame,column);
+        if isViscousTest
+            return;
+        end
+        exactValues = referenceField(firstFrame,column);
         exactValues = exactValues(fluid & isfinite(exactValues));
 
         if ~isempty(exactValues)
@@ -3571,10 +3777,10 @@ end
             anchors = [0.10 0.25 0.80;1 1 1;0.80 0.10 0.10];
             colours = interp1([0 0.5 1],anchors,linspace(0,1,257));
             colormap(ax,colours);
-            colormap(axExact,colours);
+            if ~isViscousTest, colormap(axExact,colours); end
         else
             colormap(ax,turbo);
-            colormap(axExact,turbo);
+            if ~isViscousTest, colormap(axExact,turbo); end
         end
     end
 
