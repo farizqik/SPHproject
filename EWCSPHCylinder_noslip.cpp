@@ -24,8 +24,8 @@ using namespace std;
 const double dtMax = 0.001;
 const double dtMin = 1.0e-8;
 const double CFL = 0.3;
-const double OutputTimeInterval = 0.1;
-const double Totaltime = 60.0 + OutputTimeInterval;
+const double OutputTimeInterval = 0.1;  
+const double Totaltime = 120.0 + OutputTimeInterval;
 
 
 // ------------------------------------------------------------
@@ -60,7 +60,7 @@ const double c0 = 20.0*inletVelocity;
 const double gammaEOS = 7.0; 
 const double B = c0*c0*rho0/gammaEOS;
 
-const double viscosity = 1.0e-5;
+const double viscosity = 5 * 1.0e-5;
 const double viscdr0 = 1.0e-5;
 const double tvis = 0.01;
 const double Dcylinder = 0.1;
@@ -73,7 +73,7 @@ const double alphaAV = 0.0;
 
 const double betaAV = 0.0;
 
-const double deltadifussion = 0.01;
+const double deltadifussion = 0.0;
 
 
 const int NsupportLayers = 4;
@@ -612,6 +612,7 @@ inline void accumulateInteraction(
     const double massJ =
         rhos[j]*Vj;
 
+    // Morris Viscosity
     const double viscCoeff =
         2.0*viscosity*massJ
         *p.viscGeo/rhoMean;
@@ -619,6 +620,7 @@ inline void accumulateInteraction(
     duAcc += viscCoeff*du;
     dvAcc += viscCoeff*dv;
 
+    // Monaghan & Gingold Viscosity
     /*const double viscCoeff =
         2.0*viscosity*massJ*vijrij
         /((p.r2 + 0.01*p.hbar*p.hbar)*rhoMean);     
@@ -2644,7 +2646,7 @@ int main()
                 v[i] = ur*st + ut*ct;
             }
 
-            // Small, localised initial perturbation for viscous wake
+            /*// Small, localised initial perturbation for viscous wake
             if (useNoSlip && i < NfluidEnd)
             {
                 const double perturbationAmplitude =
@@ -2660,7 +2662,7 @@ int main()
                 v[i] += perturbationAmplitude *
                     exp(-(dx*dx + dy*dy)/
                         (2.0*sigma*sigma));
-            }
+            }*/
 
 
 

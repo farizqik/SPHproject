@@ -1,8 +1,11 @@
-function EWCSPH_MATLAB_ViscousSinglePlot_v2(simulationFolder,testScenario)
+function EWCSPH_MATLAB_ViscousSinglePlot_v2_nondimensional_all_axis_controls(simulationFolder,testScenario)
 
 %% =========================================================
 % DATASET SELECTION
 % ==========================================================
+
+maxFrames = 1000;  % Change this as needed
+
 if nargin < 1 || strlength(string(simulationFolder)) == 0
 
     selectedFolder = uigetdir(pwd,'Select EWCSPH simulation output folder');
@@ -153,7 +156,7 @@ fprintf('Kernel: %s | NTheta: %d | flow angle: %.6g deg\n', ...
 
 plotVariable = "velocity";
 
-manualColorLimits = [];
+manualColorLimits = []; % Enter NONDIMENSIONAL limits here (e.g. [-5 5] for omega*D/U).
 
 colorPercentiles = [5 95];
 
@@ -166,11 +169,14 @@ videoQuality = 95;
 showStreamlines = false;
 
 % Denser streamline interpolation/seeding for both SPH and potential flow.
-streamGridSize = 320;
+streamGridSize = 220;  % Reduced Cartesian grid for interactive streamline tracing
 
-streamSeedCount = 100;
+streamSeedCount = 70;  % Upstream boundary seeds; additional interior seeds cover the wake
+streamStep = 0.30;     % stream2 step measured in grid cells
+streamMaxVertices = 1000; % Limit tracing cost per seed
+streamPlaybackStride = 4; % Update streamlines every 4 frames during playback
 
-showVelocityArrows = true;
+showVelocityArrows = false;
 
 arrowAngularCount = 32;    % Representative angular locations
 arrowRadialCount = 15;      % Representative radial locations
@@ -273,6 +279,17 @@ time = allTime(selected);
 [time,order] = sort(time);
 
 files = files(order);
+
+% ==============================================
+% LIMIT NUMBER OF FRAMES
+% ==============================================
+
+
+
+nKeep = min(maxFrames, numel(files));
+
+files = files(1:nKeep);
+time = time(1:nKeep);
 
 numberOfFrames = numel(files);
 
@@ -820,7 +837,28 @@ clear allX allY;
 
 firstFrame = getFrame(1);
 
-colorLabel = colorLabels(initialVariableIndex);
+% Nondimensional display only; all stored solver data remain dimensional.
+% Coordinates are relative to the cylinder centre and scaled by D.
+if ~(isfinite(cylinderDiameter) && cylinderDiameter > 0)
+    error('Dcylinder must be positive for nondimensional plots.');
+end
+if ~(isfinite(referenceSpeed) && referenceSpeed > 0)
+    error('inletVelocity must be positive for nondimensional plots.');
+end
+if ~(isfinite(referenceDensity) && referenceDensity > 0)
+    error('rho0 must be positive for nondimensional plots.');
+end
+if hasCylinder && any(boundary)
+    nondimCenter = [mean(firstFrame(boundary,1)),mean(firstFrame(boundary,2))];
+else
+    firstFluidRowsND = fluidRows(1:min(nTheta,numel(fluidRows)));
+    nondimCenter = [mean(firstFrame(firstFluidRowsND,1)), ...
+                    mean(firstFrame(firstFluidRowsND,2))];
+end
+xLimits = (xLimits-nondimCenter(1))/cylinderDiameter;
+yLimits = (yLimits-nondimCenter(2))/cylinderDiameter;
+
+colorLabel = nondimColorLabel(fieldColumn);
 
 fieldLimitCache = ...
     nan(numberOfCachedFields,2);
@@ -922,9 +960,9 @@ firstFluidRingRows = baseSurfaceRows(:,1);
 surfaceRows = [baseSurfaceRows; baseSurfaceRows(1,:)];
 meshSize = size(surfaceRows);
 
-meshX = firstFrame(surfaceRows(:),1);
-meshY = firstFrame(surfaceRows(:),2);
-meshC = firstFrame(surfaceRows(:),fieldColumn);
+meshX = (firstFrame(surfaceRows(:),1)-nondimCenter(1))/cylinderDiameter;
+meshY = (firstFrame(surfaceRows(:),2)-nondimCenter(2))/cylinderDiameter;
+meshC = nondimField(firstFrame(surfaceRows(:),fieldColumn),fieldColumn);
 
 meshCExact = zeros(size(meshC));
 
@@ -944,13 +982,14 @@ hExactFluid = surf(axExact, ...
 
 view(ax,2);
 view(axExact,2);
+set([ax axExact],'SortMethod','childorder');
 hExactFluid.HitTest = 'off';
 hExactFluid.PickableParts = 'none';
 
 %% Optional cylinder boundary on both panels
 if hasCylinder
-    boundaryX = firstFrame(boundary,1);
-    boundaryY = firstFrame(boundary,2);
+    boundaryX = (firstFrame(boundary,1)-nondimCenter(1))/cylinderDiameter;
+    boundaryY = (firstFrame(boundary,2)-nondimCenter(2))/cylinderDiameter;
 else
     boundaryX = NaN;
     boundaryY = NaN;
@@ -997,10 +1036,10 @@ arrowGridRows = baseSurfaceRows(arrowAngularIndices,arrowRadialIndices);
 arrowRows = arrowGridRows(:);
 
 hVelocity = quiver(ax, ...
-    firstFrame(arrowRows,1), ...
-    firstFrame(arrowRows,2), ...
-    firstFrame(arrowRows,6), ...
-    firstFrame(arrowRows,7), ...
+    (firstFrame(arrowRows,1)-nondimCenter(1))/cylinderDiameter, ...
+    (firstFrame(arrowRows,2)-nondimCenter(2))/cylinderDiameter, ...
+    firstFrame(arrowRows,6)/referenceSpeed, ...
+    firstFrame(arrowRows,7)/referenceSpeed, ...
     arrowScale,'Color',arrowColor,'LineWidth',1.3, ...
     'MaxHeadSize',arrowHeadSize);
 
@@ -1008,8 +1047,8 @@ exactU0 = zeros(size(arrowRows));
 exactV0 = zeros(size(arrowRows));
 
 hExactVelocity = quiver(axExact, ...
-    firstFrame(arrowRows,1), ...
-    firstFrame(arrowRows,2), ...
+    (firstFrame(arrowRows,1)-nondimCenter(1))/cylinderDiameter, ...
+    (firstFrame(arrowRows,2)-nondimCenter(2))/cylinderDiameter, ...
     exactU0,exactV0, ...
     arrowScale,'Color',arrowColor,'LineWidth',1.3, ...
     'MaxHeadSize',arrowHeadSize);
@@ -1025,8 +1064,8 @@ hExactVelocity.HitTest = 'off';
 hExactVelocity.PickableParts = 'none';
 
 %% Streamline geometry shared by both panels
-hStreamlines = gobjects(0);
-hExactStreamlines = gobjects(0);
+hStreamlines = gobjects(1); % Scalar invalid handle; isempty(gobjects(0)) prevented creation
+hExactStreamlines = gobjects(1);
 
 if hasCylinder
     streamCenter = [mean(firstFrame(boundary,1)),mean(firstFrame(boundary,2))];
@@ -1069,21 +1108,53 @@ streamMask = queryR < streamRadii(1) | queryR > streamRadii(end);
 flowUnit = [cosd(flowAngleDeg),sind(flowAngleDeg)];
 normalUnit = [-flowUnit(2),flowUnit(1)];
 
-% Dense upstream seeding across the cylinder diameter/domain.
-seedCross = linspace(-0.92*outerRadius,0.92*outerRadius,streamSeedCount);
-upstreamDistance = 0.96*outerRadius;
+% Seed points are INSIDE the fluid annulus, not on a straight line outside
+% the circular computational domain. Interior seeds fill wake/recirculation.
+streamOuter = streamRadii(end);
+streamlineZ = max(1e-4, 0.01*streamOuter); % Draw ABOVE the z=0 surface
+streamInner = streamRadii(1);
+seedRadius = 0.92*streamOuter;
+seedCross = linspace(-0.94*seedRadius,0.94*seedRadius,streamSeedCount);
+upstreamDistance = sqrt(max(0,seedRadius^2-seedCross.^2));
 seedX = streamCenter(1)-upstreamDistance*flowUnit(1)+seedCross*normalUnit(1);
 seedY = streamCenter(2)-upstreamDistance*flowUnit(2)+seedCross*normalUnit(2);
 
-% Add several downstream rows of seeds to resolve the wake region in SPH.
-if hasCylinder
-    wakeDistance = linspace(1.25*innerRadius,0.70*outerRadius,10);
-    wakeOffsets = [-0.75 -0.40 0 0.40 0.75]*innerRadius;
-    for io = 1:numel(wakeOffsets)
-        seedX = [seedX, streamCenter(1)+wakeDistance*flowUnit(1)+wakeOffsets(io)*normalUnit(1)]; %#ok<AGROW>
-        seedY = [seedY, streamCenter(2)+wakeDistance*flowUnit(2)+wakeOffsets(io)*normalUnit(2)]; %#ok<AGROW>
+% Distributed, staggered interior seeds: focus on the wake while still
+% covering the full disk. Trace these in BOTH directions.
+interiorParallel = [];
+interiorNormal = [];
+interiorStep = 0.18*streamOuter;
+for xLocal = -0.60*streamOuter:interiorStep:0.75*streamOuter
+    yLimit = sqrt(max(0,(0.88*streamOuter)^2-xLocal^2));
+    ySamples = -yLimit:interiorStep:yLimit;
+    for yLocal = ySamples
+        rLocal = hypot(xLocal,yLocal);
+        if rLocal > streamInner + 0.10*streamOuter && ...
+                rLocal < 0.89*streamOuter
+            interiorParallel(end+1) = xLocal; %#ok<AGROW>
+            interiorNormal(end+1) = yLocal; %#ok<AGROW>
+        end
     end
 end
+% A few extra seeds resolve the wake directly behind the cylinder.
+if hasCylinder
+    wakeParallel = linspace(1.4*innerRadius,0.72*streamOuter,8);
+    wakeNormal = [-0.75 0 0.75]*innerRadius;
+    for yy = wakeNormal
+        for xx = wakeParallel
+            if hypot(xx,yy) > streamInner + 0.02*streamOuter
+                interiorParallel(end+1) = xx; %#ok<AGROW>
+                interiorNormal(end+1) = yy; %#ok<AGROW>
+            end
+        end
+    end
+end
+interiorSeedX = streamCenter(1) + interiorParallel*flowUnit(1) + interiorNormal*normalUnit(1);
+interiorSeedY = streamCenter(2) + interiorParallel*flowUnit(2) + interiorNormal*normalUnit(2);
+
+% Cache of analytical streamline polylines; exact potential flow is static.
+exactStreamlineXY = [];
+lastStreamlineFrame = -1;
 
 %% Precompute the analytical values ONCE (coordinates never move).
 % This avoids reevaluating potential flow for all particles every frame.
@@ -1093,8 +1164,8 @@ if ~isViscousTest
     for fixedColumn = 3:numberOfCachedFields
         exactFieldsFixed(:,fixedColumn) = referenceField(firstFrame,fixedColumn);
     end
-    set(hExactVelocity, 'UData',exactFieldsFixed(arrowRows,6), ...
-        'VData',exactFieldsFixed(arrowRows,7));
+    set(hExactVelocity, 'UData',exactFieldsFixed(arrowRows,6)/referenceSpeed, ...
+        'VData',exactFieldsFixed(arrowRows,7)/referenceSpeed);
 end
 
 %% Axes formatting
@@ -1102,8 +1173,8 @@ for a = [ax axExact]
     axis(a,'equal');
     xlim(a,xLimits);
     ylim(a,yLimits);
-    xlabel(a,'x (m)');
-    ylabel(a,'y (m)');
+    xlabel(a,'(x - x_c)/D');
+    ylabel(a,'(y - y_c)/D');
     grid(a,'off');
     box(a,'on');
 end
@@ -1125,8 +1196,8 @@ if isViscousTest
 end
 
 [fieldMin,fieldMax] = getComparisonColorLimits(fieldColumn);
-clim(ax,[fieldMin fieldMax]);
-clim(axExact,[fieldMin fieldMax]);
+clim(ax,nondimLimits([fieldMin fieldMax],fieldColumn));
+clim(axExact,nondimLimits([fieldMin fieldMax],fieldColumn));
 
 % Keep both spatial views synchronized during zoom/pan.
 if ~isViscousTest
@@ -1369,11 +1440,11 @@ globalComparisonInfo = uicontrol( ...
 
 axGlobalValue = axes( ...
     globalComparisonTab, ...
-    'Position',[0.07 0.14 0.42 0.70]);
+    'Position',[0.07 0.22 0.42 0.62]);
 
 axGlobalError = axes( ...
     globalComparisonTab, ...
-    'Position',[0.55 0.14 0.40 0.70]);
+    'Position',[0.55 0.22 0.40 0.62]);
 
 hGlobalCurrentTimeValue = gobjects(1);
 hGlobalCurrentTimeError = gobjects(1);
@@ -1508,11 +1579,11 @@ localComparisonInfo = uicontrol( ...
 
 axLocalValue = axes( ...
     localComparisonTab, ...
-    'Position',[0.07 0.12 0.42 0.71]);
+    'Position',[0.07 0.22 0.42 0.59]);
 
 axLocalError = axes( ...
     localComparisonTab, ...
-    'Position',[0.55 0.12 0.40 0.71]);
+    'Position',[0.55 0.22 0.40 0.59]);
 
 %% =========================================================
 % TANGENTIAL VELOCITY PROFILE: WALL TO OUTER PHYSICAL RING
@@ -1544,8 +1615,8 @@ end
 legend(axTangential,'Location','best');
 grid(axTangential,'on');
 box(axTangential,'on');
-xlabel(axTangential,'Absolute tangential velocity |u_\theta| (m/s)');
-ylabel(axTangential,'Distance from cylinder surface, r - r_0 (m)');
+xlabel(axTangential,'|u_\theta| / U_\infty');
+ylabel(axTangential,'(r - r_0) / D');
 title(axTangential,'Absolute tangential velocity along a radial line');
 
 %% =========================================================
@@ -1579,8 +1650,8 @@ end
 axis(axParticles,'equal');
 xlim(axParticles,xLimits);
 ylim(axParticles,yLimits);
-xlabel(axParticles,'x (m)');
-ylabel(axParticles,'y (m)');
+xlabel(axParticles,'(x - x_c)/D');
+ylabel(axParticles,'(y - y_c)/D');
 title(axParticles,sprintf('Particle distribution | Total: %d | N_{\theta}: %d', ...
     numberOfParticles,nTheta));
 box(axParticles,'on');
@@ -1594,6 +1665,82 @@ uicontrol(particleTab,'Style','text', ...
     'Units','normalized','Position',[0.09 0.055 0.83 0.065], ...
     'BackgroundColor','w','HorizontalAlignment','center');
 
+
+%% =========================================================
+% INTERACTIVE NONDIMENSIONAL AXIS LIMITS
+% ==========================================================
+% The Flow Field and Particle Distribution tabs have independent input
+% boxes, but Apply on either tab synchronises both plots.  SPH and exact
+% potential flow are always shown with identical nondimensional limits.
+initialXLimitsND = xLimits;
+initialYLimitsND = yLimits;
+axisControlTabs = {flowTab,particleTab};
+axisLimitEdits = gobjects(2,4);
+axisLimitLabels = {'X min','X max','Y min','Y max'};
+axisLimitValues = [xLimits yLimits];
+for axisControlTabIndex = 1:2
+    parentTab = axisControlTabs{axisControlTabIndex};
+    for axisControlField = 1:4
+        leftPos = 0.025 + (axisControlField-1)*0.196;
+        uicontrol(parentTab, 'Style','text', ...
+            'String',axisLimitLabels{axisControlField}, ...
+            'Units','normalized','Position',[leftPos 0.939 0.069 0.033], ...
+            'BackgroundColor','w','HorizontalAlignment','right');
+        axisLimitEdits(axisControlTabIndex,axisControlField) = uicontrol( ...
+            parentTab,'Style','edit','Units','normalized', ...
+            'Position',[leftPos+0.074 0.940 0.099 0.040], ...
+            'String',sprintf('%.6g',axisLimitValues(axisControlField)), ...
+            'BackgroundColor','w');
+    end
+    uicontrol(parentTab,'Style','pushbutton','String','Apply', ...
+        'Units','normalized','Position',[0.812 0.939 0.076 0.042], ...
+        'Callback',@(~,~)applyAxisLimits(axisControlTabIndex));
+    uicontrol(parentTab,'Style','pushbutton','String','Reset', ...
+        'Units','normalized','Position',[0.895 0.939 0.076 0.042], ...
+        'Callback',@(~,~)resetAxisLimits());
+end
+
+%% =========================================================
+% HYDRODYNAMIC FORCES / LOCAL SPH RESULTS AXIS CONTROLS
+% ==========================================================
+% Each graph has independent limits. NaN entries mean automatic limits.
+% Explicit overrides persist when changing parameters, layers or time.
+analysisAxisGroups = {[axGlobalValue,axGlobalError], ...
+                      [axLocalValue,axLocalError]};
+analysisTabs = {globalComparisonTab,localComparisonTab};
+analysisAxisOverrides = nan(2,2,4);
+analysisAxisEdits = gobjects(2,2,4);
+analysisAxisLabels = {'X min','X max','Y min','Y max'};
+for analysisTabIndex = 1:2
+    currentTab = analysisTabs{analysisTabIndex};
+    for analysisPlotIndex = 1:2
+        yPosition = 0.091 - (analysisPlotIndex-1)*0.060;
+        plotCaption = {'Value plot','Error plot'};
+        uicontrol(currentTab,'Style','text', ...
+            'String',plotCaption{analysisPlotIndex},'Units','normalized', ...
+            'Position',[0.015 yPosition 0.104 0.033], ...
+            'BackgroundColor','w','HorizontalAlignment','left');
+        for analysisFieldIndex = 1:4
+            xPosition = 0.120 + (analysisFieldIndex-1)*0.162;
+            uicontrol(currentTab,'Style','text', ...
+                'String',analysisAxisLabels{analysisFieldIndex}, ...
+                'Units','normalized', ...
+                'Position',[xPosition yPosition 0.058 0.031], ...
+                'BackgroundColor','w','HorizontalAlignment','right');
+            analysisAxisEdits(analysisTabIndex,analysisPlotIndex,analysisFieldIndex) = ...
+                uicontrol(currentTab,'Style','edit','Units','normalized', ...
+                'Position',[xPosition+0.060 yPosition 0.084 0.038], ...
+                'String','Auto','BackgroundColor','w');
+        end
+        % Capture loop indices by passing them as function arguments.
+        uicontrol(currentTab,'Style','pushbutton','String','Apply', ...
+            'Units','normalized','Position',[0.780 yPosition 0.085 0.039], ...
+            'Callback',{@applyAnalysisAxisLimits,analysisTabIndex,analysisPlotIndex});
+        uicontrol(currentTab,'Style','pushbutton','String','Reset', ...
+            'Units','normalized','Position',[0.876 yPosition 0.085 0.039], ...
+            'Callback',{@resetAnalysisAxisLimits,analysisTabIndex,analysisPlotIndex});
+    end
+end
 
 %% =========================================================
 
@@ -2019,10 +2166,10 @@ end
             utExact = -uExact.*sin(thetaActual) + vExact.*cos(thetaActual);
         end
         [radialDistance,ord] = sort(rr-innerRadius);
-        set(hTangentialSPH,'XData',abs(utSPH(ord)), ...
-            'YData',radialDistance);
-        set(hTangentialExact,'XData',abs(utExact(ord)), ...
-            'YData',radialDistance);
+        set(hTangentialSPH,'XData',abs(utSPH(ord))/referenceSpeed, ...
+            'YData',radialDistance/cylinderDiameter);
+        set(hTangentialExact,'XData',abs(utExact(ord))/referenceSpeed, ...
+            'YData',radialDistance/cylinderDiameter);
         actualDeg = mod(rad2deg(thetaActual(1)),360);
         tangentialInfo.String = sprintf( ...
             'Nearest grid angle: %.2f deg | frame t = %.4f s | %d radial points', ...
@@ -2084,12 +2231,11 @@ end
             % Generate only when requested, using the currently displayed frame.
             currentState = guidata(fig);
             updateStreamlines(currentState.currentFrame);
+            lastStreamlineFrame = currentState.index;
         else
-            % Remove the costly line objects immediately from both panels.
-            delete(hStreamlines(isgraphics(hStreamlines)));
-            delete(hExactStreamlines(isgraphics(hExactStreamlines)));
-            hStreamlines = gobjects(0);
-            hExactStreamlines = gobjects(0);
+            % Hide rather than delete; reusing one graphics object is cheaper.
+            if isgraphics(hStreamlines), hStreamlines.Visible = 'off'; end
+            if isgraphics(hExactStreamlines), hExactStreamlines.Visible = 'off'; end
         end
         drawnow limitrate;
     end
@@ -2110,12 +2256,12 @@ end
         meshX = frame(surfaceRows(:),1);
         meshY = frame(surfaceRows(:),2);
 
-        meshC = frame(surfaceRows(:),fieldColumn);
+        meshC = nondimField(frame(surfaceRows(:),fieldColumn),fieldColumn);
         meshC(~isfinite(meshC)) = NaN;
 
         if ~isViscousTest
             exactField = exactFieldsFixed(:,fieldColumn);
-            meshCExact = exactField(surfaceRows(:));
+            meshCExact = nondimField(exactField(surfaceRows(:)),fieldColumn);
             meshCExact(~isfinite(meshCExact)) = NaN;
         end
 
@@ -2127,9 +2273,9 @@ end
 
         %% Velocity arrow update
 
-        arrowU = frame(arrowRows,6);
+        arrowU = frame(arrowRows,6)/referenceSpeed;
 
-        arrowV = frame(arrowRows,7);
+        arrowV = frame(arrowRows,7)/referenceSpeed;
 
         invalidArrow = ~isfinite(arrowU) | ~isfinite(arrowV);
 
@@ -2150,19 +2296,26 @@ end
         % Their UData/VData were set during initialisation.
 
         if showStreamlines
-            updateStreamlines(frame);
+            % Keep single-frame navigation responsive and refresh less often
+            % during playback. The reference field never needs recomputing.
+            if strcmp(playTimer.Running,'off') || ...
+                    mod(requestedIndex-1,streamPlaybackStride)==0 || ...
+                    lastStreamlineFrame < 0
+                updateStreamlines(frame);
+                lastStreamlineFrame = requestedIndex;
+            end
         end
 
         %% Boundary positions
 
         if hasCylinder
             set(hBoundary, ...
-                'XData',frame(boundary,1), ...
-                'YData',frame(boundary,2));
+                'XData',(frame(boundary,1)-nondimCenter(1))/cylinderDiameter, ...
+                'YData',(frame(boundary,2)-nondimCenter(2))/cylinderDiameter);
             if ~isViscousTest
                 set(hExactBoundary, ...
-                    'XData',frame(boundary,1), ...
-                    'YData',frame(boundary,2));
+                    'XData',(frame(boundary,1)-nondimCenter(1))/cylinderDiameter, ...
+                    'YData',(frame(boundary,2)-nondimCenter(2))/cylinderDiameter);
             end
         else
             set(hBoundary,'XData',NaN,'YData',NaN);
@@ -2371,6 +2524,111 @@ end
 
     % ----------------------------------------------------------
 
+    %% ---------------------------------------------------------
+    % Apply and reset plot limits (x/D and y/D)
+    % ----------------------------------------------------------
+    function applyAxisLimits(tabIndex)
+        requested = zeros(1,4);
+        for axisFieldIndex = 1:4
+            requested(axisFieldIndex) = str2double( ...
+                axisLimitEdits(tabIndex,axisFieldIndex).String);
+        end
+        if any(~isfinite(requested)) || ...
+                requested(1)>=requested(2) || requested(3)>=requested(4)
+            errordlg('Enter finite limits with X min < X max and Y min < Y max.', ...
+                'Invalid nondimensional axis limits');
+            return;
+        end
+        xLimits = requested(1:2);
+        yLimits = requested(3:4);
+        set([ax axExact axParticles],'XLim',xLimits,'YLim',yLimits, ...
+            'XLimMode','manual','YLimMode','manual');
+        % Maintain equal physical scale; no resizing of the data itself.
+        set([ax axExact axParticles],'DataAspectRatio',[1 1 1], ...
+            'DataAspectRatioMode','manual');
+        syncAxisLimitEdits();
+        drawnow limitrate;
+    end
+
+    function resetAxisLimits()
+        xLimits = initialXLimitsND;
+        yLimits = initialYLimitsND;
+        set([ax axExact axParticles],'XLim',xLimits,'YLim',yLimits, ...
+            'XLimMode','manual','YLimMode','manual');
+        set([ax axExact axParticles],'DataAspectRatio',[1 1 1], ...
+            'DataAspectRatioMode','manual');
+        syncAxisLimitEdits();
+        drawnow limitrate;
+    end
+
+    function syncAxisLimitEdits()
+        limits = [xLimits yLimits];
+        for axisTabIndex = 1:2
+            for axisFieldIndex = 1:4
+                if isgraphics(axisLimitEdits(axisTabIndex,axisFieldIndex))
+                    axisLimitEdits(axisTabIndex,axisFieldIndex).String = ...
+                        sprintf('%.6g',limits(axisFieldIndex));
+                end
+            end
+        end
+    end
+
+    % Independent axis limits for the two comparison tabs.
+    % Enter numeric min/max, or 'Auto' to return to MATLAB autoscaling.
+    function applyAnalysisAxisLimits(~,~,tabIndex,plotIndex)
+        requested = nan(1,4);
+        for fieldIndex = 1:4
+            entry = strtrim(analysisAxisEdits(tabIndex,plotIndex,fieldIndex).String);
+            if ~strcmpi(entry,'auto') && ~isempty(entry)
+                requested(fieldIndex) = str2double(entry);
+                if ~isfinite(requested(fieldIndex))
+                    errordlg('Use finite numeric values or Auto.','Invalid axis limit');
+                    return;
+                end
+            end
+        end
+        % An axis pair must be either fully automatic or fully specified.
+        if xor(isfinite(requested(1)),isfinite(requested(2))) || ...
+                xor(isfinite(requested(3)),isfinite(requested(4))) || ...
+                (all(isfinite(requested(1:2))) && requested(1)>=requested(2)) || ...
+                (all(isfinite(requested(3:4))) && requested(3)>=requested(4))
+            errordlg('Specify both min and max for each axis, or use Auto for both.', ...
+                'Invalid axis limit');
+            return;
+        end
+        analysisAxisOverrides(tabIndex,plotIndex,:) = reshape(requested,1,1,4);
+        restoreAnalysisAxes(tabIndex);
+        drawnow limitrate;
+    end
+
+    function resetAnalysisAxisLimits(~,~,tabIndex,plotIndex)
+        analysisAxisOverrides(tabIndex,plotIndex,:) = nan;
+        for fieldIndex = 1:4
+            analysisAxisEdits(tabIndex,plotIndex,fieldIndex).String = 'Auto';
+        end
+        restoreAnalysisAxes(tabIndex);
+        drawnow limitrate;
+    end
+
+    function restoreAnalysisAxes(tabIndex)
+        for plotIndex = 1:2
+            axesPair = analysisAxisGroups{tabIndex};
+            currentAxes = axesPair(plotIndex);
+            if ~isgraphics(currentAxes),continue;end
+            requested = reshape(analysisAxisOverrides(tabIndex,plotIndex,:),1,4);
+            if all(isfinite(requested(1:2)))
+                xlim(currentAxes,requested(1:2));
+            else
+                set(currentAxes,'XLimMode','auto');
+            end
+            if all(isfinite(requested(3:4)))
+                ylim(currentAxes,requested(3:4));
+            else
+                set(currentAxes,'YLimMode','auto');
+            end
+        end
+    end
+
     function sliderMoved(source,~)
 
         stopPlayback;
@@ -2399,9 +2657,9 @@ end
             find(cacheNames == plotVariable,1);
 
         c.Label.String = ...
-            colorLabels(selectedIndex);
+            nondimColorLabel(fieldColumn);
         if ~isViscousTest
-            cExact.Label.String = colorLabels(selectedIndex);
+            cExact.Label.String = nondimColorLabel(fieldColumn);
         end
 
         setFieldColormap;
@@ -2409,9 +2667,9 @@ end
         [newFieldMin,newFieldMax] = ...
             getComparisonColorLimits(fieldColumn);
 
-        clim(ax,[newFieldMin newFieldMax]);
+        clim(ax,nondimLimits([newFieldMin newFieldMax],fieldColumn));
         if ~isViscousTest
-            clim(axExact,[newFieldMin newFieldMax]);
+            clim(axExact,nondimLimits([newFieldMin newFieldMax],fieldColumn));
         end
 
         currentState = guidata(fig);
@@ -2670,9 +2928,9 @@ end
 
         end
 
-        dx = frame(candidateRows,1) - xClick;
+        dx = (frame(candidateRows,1)-nondimCenter(1))/cylinderDiameter - xClick;
 
-        dy = frame(candidateRows,2) - yClick;
+        dy = (frame(candidateRows,2)-nondimCenter(2))/cylinderDiameter - yClick;
 
         [~,nearestIndex] = min(dx.^2 + dy.^2);
 
@@ -2710,8 +2968,8 @@ end
 
         set( ...
             hSelectedParticle, ...
-            'XData',frame(row,1), ...
-            'YData',frame(row,2));
+            'XData',(frame(row,1)-nondimCenter(1))/cylinderDiameter, ...
+            'YData',(frame(row,2)-nondimCenter(2))/cylinderDiameter);
 
         hParticleInfo.String = sprintf( ...
             ['Selected %s particle\n' ...
@@ -2950,6 +3208,7 @@ end
     % ----------------------------------------------------------
 
     function updateGlobalComparisonPlot(~,~)
+        analysisAxisGuard = onCleanup(@()restoreAnalysisAxes(1)); %#ok<NASGU>
 
         if ~comparisonAvailable
             cla(axGlobalValue);
@@ -3129,6 +3388,7 @@ end
     % ----------------------------------------------------------
 
     function updateLocalComparisonPlot(~,~)
+        analysisAxisGuard = onCleanup(@()restoreAnalysisAxes(2)); %#ok<NASGU>
 
         if ~comparisonAvailable
             cla(axLocalValue);
@@ -3597,16 +3857,9 @@ end
     % Instantaneous streamlines; these are not time-dependent trajectories.
 
     function updateStreamlines(frame)
-        delete(hStreamlines(isgraphics(hStreamlines)));
-        delete(hExactStreamlines(isgraphics(hExactStreamlines)));
-        hStreamlines = gobjects(0);
-        hExactStreamlines = gobjects(0);
+        if ~showStreamlines, return; end
 
-        if ~showStreamlines
-            return;
-        end
-
-        % ---------------- SPH streamline field ----------------
+        % ---------------- SPH field from the fixed polar mesh ----------------
         U = reshape(frame(fluidRows,6),nTheta,[]);
         V = reshape(frame(fluidRows,7),nTheta,[]);
         U = U(angleOrder,:);
@@ -3621,47 +3874,115 @@ end
         gridU(streamMask) = NaN;
         gridV(streamMask) = NaN;
 
-        paths = stream2(streamX,streamY,gridU,gridV,seedX,seedY,[0.10 4000]);
-        hStreamlines = drawStreamlinePaths(ax,paths);
-
-        % No second reference field is drawn in the viscous scenario.
-        if isViscousTest
-            return;
+        % Boundary seeds trace forwards; interior seeds trace BOTH ways.
+        % Use moderate integration lengths to bound interactive work.
+        options = [streamStep streamMaxVertices];
+        pIn = stream2(streamX,streamY,gridU,gridV,seedX,seedY,options);
+        pFwd = stream2(streamX,streamY,gridU,gridV, ...
+            interiorSeedX,interiorSeedY,options);
+        pBack = stream2(streamX,streamY,-gridU,-gridV, ...
+            interiorSeedX,interiorSeedY,options);
+        allPaths = [pIn(:);pFwd(:);pBack(:)];
+        validCount = sum(cellfun(@(q) size(q,1)>=2,allPaths));
+        if validCount == 0
+            % Recovery: safe annular interior seeds, well away from NaN mask.
+            [rr,tt] = ndgrid(linspace(streamInner+0.20*(streamOuter-streamInner), ...
+                                     0.75*streamOuter,5),linspace(0,2*pi,36));
+            sx = streamCenter(1)+rr(:)'.*cos(tt(:)');
+            sy = streamCenter(2)+rr(:)'.*sin(tt(:)');
+            validSeeds = interp2(streamX,streamY,double(isfinite(gridU)&isfinite(gridV)), ...
+                                 sx,sy,'nearest',0)>0;
+            pFwd = stream2(streamX,streamY,gridU,gridV,sx(validSeeds),sy(validSeeds),options);
+            pBack = stream2(streamX,streamY,-gridU,-gridV,sx(validSeeds),sy(validSeeds),options);
+            allPaths = [pFwd(:);pBack(:)];
+            validCount = sum(cellfun(@(q) size(q,1)>=2,allPaths));
         end
+        if validCount == 0
+            warning('Streamline tracing returned no paths. Check finite u/v and the interpolation mask.');
+        end
+        plotStreamlinesFast(ax,allPaths,false);
+        fprintf('Streamlines: %d traced paths, %d drawable XY points, %d valid grid cells\n', ...
+            validCount,nnz(isfinite(hStreamlines.XData)&isfinite(hStreamlines.YData)), ...
+            nnz(isfinite(gridU)&isfinite(gridV)));
 
-        % -------- analytical potential-flow streamline field --------
-        if isViscousTest
-            gridUExact = referenceUx*ones(size(streamX));
-            gridVExact = referenceUy*ones(size(streamY));
-        else
+        if isViscousTest, return; end
+
+        % Analytic potential flow does not change between frames.
+        if isempty(exactStreamlineXY)
             [gridUExact,gridVExact] = potentialFlowVelocity(streamX,streamY);
+            gridUExact(streamMask) = NaN;
+            gridVExact(streamMask) = NaN;
+            eIn = stream2(streamX,streamY,gridUExact,gridVExact,seedX,seedY,options);
+            eFwd = stream2(streamX,streamY,gridUExact,gridVExact, ...
+                interiorSeedX,interiorSeedY,options);
+            eBack = stream2(streamX,streamY,-gridUExact,-gridVExact, ...
+                interiorSeedX,interiorSeedY,options);
+            exactStreamlineXY = concatenatePaths([eIn(:);eFwd(:);eBack(:)]);
         end
-        gridUExact(streamMask) = NaN;
-        gridVExact(streamMask) = NaN;
-
-        exactPaths = stream2( ...
-            streamX,streamY,gridUExact,gridVExact,seedX,seedY,[0.10 4000]);
-        hExactStreamlines = drawStreamlinePaths(axExact,exactPaths);
+        if ~isscalar(hExactStreamlines) || ~isgraphics(hExactStreamlines)
+            hExactStreamlines = line(axExact,NaN,NaN,NaN, ...
+                'Color',[0.08 0.08 0.08],'LineWidth',0.8, ...
+                'HitTest','off','PickableParts','none');
+        end
+        set(hExactStreamlines,'XData',(exactStreamlineXY(:,1)-nondimCenter(1))/cylinderDiameter, ...
+            'YData',(exactStreamlineXY(:,2)-nondimCenter(2))/cylinderDiameter, ...
+            'ZData',streamlineZ*ones(size(exactStreamlineXY,1),1), ...
+            'Visible','on');
+        set(axExact,'SortMethod','childorder');
+        uistack(hExactStreamlines,'top');
     end
 
-    function handles = drawStreamlinePaths(targetAxes,paths)
-        handles = gobjects(0);
-        for kk = 1:numel(paths)
-            points = paths{kk};
-            if size(points,1) < 2
-                continue;
+    function xy = concatenatePaths(paths)
+        % One NaN-separated polyline is much cheaper than 100+ line objects.
+        validPath = false(numel(paths),1);
+        n = 0;
+        for pp = 1:numel(paths)
+            q = paths{pp};
+            if size(q,1)>=2
+                validPath(pp) = true;
+                n = n+size(q,1)+1;
             end
-
-            rr = hypot(points(:,1)-streamCenter(1),points(:,2)-streamCenter(2));
-            invalid = rr <= wallRadius | rr >= outerRadius | any(~isfinite(points),2);
-            points(invalid,:) = NaN;
-
-            hLine = plot3(targetAxes,points(:,1),points(:,2), ...
-                1e-3*ones(size(points,1),1), ...
-                'Color',[0.12 0.12 0.12],'LineWidth',0.65, ...
-                'HitTest','off','PickableParts','none');
-            handles(end+1,1) = hLine; %#ok<AGROW>
         end
+        xy = NaN(n,2);
+        cursor = 1;
+        for pp = find(validPath(:))'
+            q = paths{pp};
+            nq = size(q,1);
+            xy(cursor:cursor+nq-1,:) = q;
+            cursor = cursor+nq+1;
+        end
+        if isempty(xy), xy = [NaN NaN]; end
+        rr = hypot(xy(:,1)-streamCenter(1),xy(:,2)-streamCenter(2));
+        xy(rr<=streamInner | rr>=streamOuter,:) = NaN;
+    end
+
+    function plotStreamlinesFast(targetAxes,paths,isReference)
+        xy = concatenatePaths(paths);
+        if isReference
+            handle = hExactStreamlines;
+        else
+            handle = hStreamlines;
+        end
+        if ~isscalar(handle) || ~isgraphics(handle)
+            % A single 2D line avoids repeated line-object creation.
+            % childorder + uistack keep it visible over the surface.
+            handle = line(targetAxes,NaN,NaN,NaN, ...
+                'Color',[0.08 0.08 0.08], ...
+                'LineWidth',0.8, ...
+                'HitTest','off', ...
+                'PickableParts','none');
+            if isReference
+                hExactStreamlines = handle;
+            else
+                hStreamlines = handle;
+            end
+        end
+        set(handle,'XData',(xy(:,1)-nondimCenter(1))/cylinderDiameter, ...
+            'YData',(xy(:,2)-nondimCenter(2))/cylinderDiameter, ...
+            'ZData',streamlineZ*ones(size(xy,1),1), ...
+            'Visible','on');
+        set(targetAxes,'SortMethod','childorder');
+        uistack(handle,'top');
     end
 
     %% Analytical potential-flow fields used only for visual comparison.
@@ -3769,6 +4090,58 @@ end
             delta = max(1,abs(fieldMinLocal)*0.01);
             fieldMinLocal = fieldMinLocal-delta;
             fieldMaxLocal = fieldMaxLocal+delta;
+        end
+    end
+
+    % Dimensionless plot fields: standard cylinder scales D and U_inf.
+    % Values read from files and values used by the SPH/streamline solver
+    % are not modified. Only plotted colour data and labels are scaled.
+    function valuesND = nondimField(values,column)
+        key = cacheNames(column);
+        switch key
+            case "rho"
+                valuesND = values/referenceDensity;
+            case "drhodt"
+                valuesND = values*cylinderDiameter/(referenceDensity*referenceSpeed);
+            case "pressure"
+                valuesND = values/(0.5*referenceDensity*referenceSpeed^2);
+            case {"u","v","velocity"}
+                valuesND = values/referenceSpeed;
+            case {"dudt","dvdt"}
+                valuesND = values*cylinderDiameter/referenceSpeed^2;
+            case "vorticity"
+                valuesND = values*cylinderDiameter/referenceSpeed;
+            otherwise
+                valuesND = values;
+        end
+    end
+
+    function limitsND = nondimLimits(limits,column)
+        limitsND = nondimField(limits,column);
+    end
+
+    function lab = nondimColorLabel(column)
+        switch cacheNames(column)
+            case "rho"
+                lab = '\rho / \rho_0';
+            case "drhodt"
+                lab = '(D / \rho_0 U_\infty) d\rho/dt';
+            case "pressure"
+                lab = 'C_p = p / (0.5 \rho_0 U_\infty^2)';
+            case "u"
+                lab = 'u / U_\infty';
+            case "v"
+                lab = 'v / U_\infty';
+            case "velocity"
+                lab = '|U| / U_\infty';
+            case "dudt"
+                lab = '(D / U_\infty^2) du/dt';
+            case "dvdt"
+                lab = '(D / U_\infty^2) dv/dt';
+            case "vorticity"
+                lab = '\omega D / U_\infty';
+            otherwise
+                lab = char(cacheNames(column));
         end
     end
 
