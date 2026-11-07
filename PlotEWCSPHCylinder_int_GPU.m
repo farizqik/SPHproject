@@ -917,6 +917,11 @@ particleTab = uitab( ...
     tabGroup, ...
     'Title','Particle Distribution');
 
+% NEW: radial pressure / normal-velocity diagnosis at 0 and 180 degrees.
+radialDiagnosticsTab = uitab( ...
+    tabGroup, ...
+    'Title','Radial Stagnation Profiles');
+
 % =========================================================
 % FLOW FIELD TAB -- SPH VS ANALYTICAL POTENTIAL FLOW
 % =========================================================
@@ -1620,6 +1625,61 @@ ylabel(axTangential,'(r - r_0) / D');
 title(axTangential,'Absolute tangential velocity along a radial line');
 
 %% =========================================================
+% NEW: STAGNATION-POINT RADIAL DIAGNOSTICS (NON-DESTRUCTIVE)
+% ==========================================================
+% Uses the ORIGINAL C++ particle values, not interpolated SPH fields.
+% The analytical pressure/velocity is evaluated at those same positions.
+% Wall + requested physical-fluid rings at 0 and 180 degrees are shown.
+
+uicontrol(radialDiagnosticsTab,'Style','text', ...
+    'String','Quantity:', 'Units','normalized', ...
+    'Position',[0.035 0.922 0.10 0.045], ...
+    'HorizontalAlignment','right','BackgroundColor','w');
+radialQuantityMenu = uicontrol(radialDiagnosticsTab,'Style','popupmenu', ...
+    'String',{'Pressure (Pa)','Radial velocity (m/s)'}, ...
+    'Value',1,'Units','normalized','BackgroundColor','w', ...
+    'Position',[0.14 0.927 0.23 0.045]);
+uicontrol(radialDiagnosticsTab,'Style','text', ...
+    'String','Fluid rings:', 'Units','normalized', ...
+    'Position',[0.39 0.922 0.12 0.045], ...
+    'HorizontalAlignment','right','BackgroundColor','w');
+radialRingsEdit = uicontrol(radialDiagnosticsTab,'Style','edit', ...
+    'String','10', 'Units','normalized', ...
+    'Position',[0.52 0.928 0.075 0.043], ...
+    'BackgroundColor','w');
+radialRefreshButton = uicontrol(radialDiagnosticsTab,'Style','pushbutton', ...
+    'String','Refresh','Units','normalized', ...
+    'Position',[0.615 0.927 0.11 0.045]);
+radialDiagnosticsInfo = uicontrol(radialDiagnosticsTab,'Style','text', ...
+    'String','','Units','normalized', ...
+    'Position',[0.055 0.845 0.88 0.06], ...
+    'HorizontalAlignment','left','BackgroundColor','w');
+axRadial0 = axes(radialDiagnosticsTab,'Position',[0.085 0.19 0.38 0.59]);
+axRadial180 = axes(radialDiagnosticsTab,'Position',[0.575 0.19 0.38 0.59]);
+radialAxes = [axRadial0,axRadial180];
+radialSPHPlots = gobjects(1,2);
+radialExactPlots = gobjects(1,2);
+for radialSide = 1:2
+    radialSPHPlots(radialSide) = plot(radialAxes(radialSide), ...
+        NaN,NaN,'o-','LineWidth',1.6,'MarkerSize',5, ...
+        'DisplayName','Eulerian SPH');
+    hold(radialAxes(radialSide),'on');
+    radialExactPlots(radialSide) = plot(radialAxes(radialSide), ...
+        NaN,NaN,'--','LineWidth',1.8, ...
+        'DisplayName','Analytical potential flow');
+    grid(radialAxes(radialSide),'on');
+    box(radialAxes(radialSide),'on');
+    xlabel(radialAxes(radialSide),'(r-r_0)/D');
+    ylabel(radialAxes(radialSide),'Pressure (Pa)');
+    legend(radialAxes(radialSide),'Location','best');
+end
+if isViscousTest
+    for radialSide = 1:2
+        radialExactPlots(radialSide).Visible = 'off';
+    end
+end
+
+%% =========================================================
 % PARTICLE DISTRIBUTION (FIXED EULERIAN GRID)
 % ==========================================================
 % Only draw once: particle coordinates and categories do not change.
@@ -1945,6 +2005,9 @@ streamlineToggle.Callback = @toggleStreamlines;
 
 parameterMenu.Callback = @parameterChanged;
     tangentialAngleEdit.Callback = @updateTangentialPlot;
+radialQuantityMenu.Callback = @updateRadialDiagnostics;
+radialRingsEdit.Callback = @updateRadialDiagnostics;
+radialRefreshButton.Callback = @updateRadialDiagnostics;
 
 frameSlider.Callback = @sliderMoved;
 
@@ -2185,6 +2248,95 @@ end
 
     %% ---------------------------------------------------------
 
+    %% ---------------------------------------------------------
+    % NEW: Wall + first N fluid rings at 0 and 180 degrees
+    % ----------------------------------------------------------
+    function updateRadialDiagnostics(~,~)
+        if ~isgraphics(axRadial0) || ~hasCylinder
+            if isgraphics(radialDiagnosticsInfo)
+                radialDiagnosticsInfo.String = ...
+                    'A cylinder boundary is required for radial profiles.';
+            end
+            return;
+        end
+
+        requestedRings = str2double(radialRingsEdit.String);
+        if ~isfinite(requestedRings) || requestedRings < 1 || ...
+                requestedRings ~= round(requestedRings)
+            radialDiagnosticsInfo.String = ...
+                'Fluid rings must be a positive integer.';
+            return;
+        end
+        nShowRings = min(nRings,requestedRings);
+        currentState = guidata(fig);
+        if isempty(currentState)
+            frame = firstFrame;
+            frameIndex = 1;
+        else
+            frame = currentState.currentFrame;
+            frameIndex = currentState.index;
+        end
+        currentIsPressure = radialQuantityMenu.Value == 1;
+        actualAngles = zeros(1,2);
+        surfaceErrors = nan(1,2);
+
+        for radialSide = 1:2
+            targetDeg = (radialSide-1)*180;
+            fluidAngles = mod(atan2( ...
+                firstFrame(firstFluidRingRows,2)-streamCenter(2), ...
+                firstFrame(firstFluidRingRows,1)-streamCenter(1)),2*pi);
+            angleDifference = angle(exp(1i*(fluidAngles-deg2rad(targetDeg))));
+            [~,angleIndex] = min(abs(angleDifference));
+            radialRows = [boundaryRows(angleIndex); ...
+                baseSurfaceRows(angleIndex,1:nShowRings).'];
+            xRel = frame(radialRows,1)-streamCenter(1);
+            yRel = frame(radialRows,2)-streamCenter(2);
+            radii = hypot(xRel,yRel);
+            angles = atan2(yRel,xRel);
+            xND = (radii-innerRadius)/cylinderDiameter;
+            actualAngles(radialSide) = mod(rad2deg(angles(1)),360);
+
+            [uRef,vRef] = potentialFlowVelocity( ...
+                frame(radialRows,1),frame(radialRows,2));
+            if currentIsPressure
+                ySPH = frame(radialRows,5);
+                yExact = 0.5*referenceDensity*( ...
+                    referenceSpeed^2 - uRef.^2 - vRef.^2);
+                yLabelText = 'Pressure (Pa)';
+                variableTitle = 'Pressure';
+            else
+                ySPH = frame(radialRows,6).*cos(angles) + ...
+                    frame(radialRows,7).*sin(angles);
+                yExact = uRef.*cos(angles) + vRef.*sin(angles);
+                yLabelText = 'Radial velocity u_r (m/s)';
+                variableTitle = 'Radial velocity';
+            end
+            surfaceErrors(radialSide) = ySPH(1)-yExact(1);
+            set(radialSPHPlots(radialSide),'XData',xND,'YData',ySPH);
+            set(radialExactPlots(radialSide),'XData',xND,'YData',yExact);
+            if isViscousTest
+                radialExactPlots(radialSide).Visible = 'off';
+            end
+            ylabel(radialAxes(radialSide),yLabelText);
+            title(radialAxes(radialSide),sprintf( ...
+                '%s | %.0f deg | t = %.4f s', ...
+                variableTitle,actualAngles(radialSide),time(frameIndex)));
+            axis(radialAxes(radialSide),'tight');
+            xlim(radialAxes(radialSide), ...
+                [0,max(xND(end),eps)]);
+        end
+        if isViscousTest
+            radialDiagnosticsInfo.String = sprintf( ...
+                'Frame t = %.4f s | wall + %d rings | potential-flow reference hidden for viscous scenario', ...
+                time(frameIndex),nShowRings);
+        else
+            radialDiagnosticsInfo.String = sprintf( ...
+                't = %.4f s | wall + %d rings | wall SPH-exact: 0 deg = %+.5g, 180 deg = %+.5g', ...
+                time(frameIndex),nShowRings, ...
+                surfaceErrors(1),surfaceErrors(2));
+        end
+    end
+
     % Return one cached frame to CPU
 
     % ----------------------------------------------------------
@@ -2423,6 +2575,8 @@ end
 
         if isequal(tabGroup.SelectedTab,tangentialTab)
             updateTangentialPlot([],[]);
+        elseif isequal(tabGroup.SelectedTab,radialDiagnosticsTab)
+            updateRadialDiagnostics([],[]);
         end
         drawnow limitrate;
 
@@ -3170,6 +3324,9 @@ end
 
         if isequal(event.NewValue,tangentialTab)
             updateTangentialPlot([],[]);
+            return;
+        elseif isequal(event.NewValue,radialDiagnosticsTab)
+            updateRadialDiagnostics([],[]);
             return;
         end
         if ~comparisonAvailable
