@@ -77,7 +77,7 @@ const double deltadifussion = 0.0;
 
 
 const int NsupportLayers = 4;
-const int Nr = 100;
+const int Nr = 115;
 const int Nbuffer = 6;      // open-boundary buffer rings
 int NrTotal = Nr + Nbuffer;
 
@@ -320,14 +320,16 @@ double calculateDt(int Nboundary,
     const vector<double>& dvdt,
     const vector<double>& h,
     double c0,
+    double viscosity,
     const string& kernel,
     const NeighbourLists& neighbours)
     {
         double dtForce = numeric_limits<double>::infinity(); //initialise dtForce to positive infinity (will be replaced if there are any fluid particles)
         double dtCFL = numeric_limits<double>::infinity(); //initialise dtCFL to positive infinity (will be replaced if there are any fluid particles)
+        double dtVisc = numeric_limits<double>::infinity(); //initialise dtVisc to positive infinity (will be replaced if there are any fluid particles)
         
         #ifdef _OPENMP
-        #pragma omp parallel for schedule(static) reduction(min:dtForce,dtCFL)
+        #pragma omp parallel for schedule(static) reduction(min:dtForce,dtCFL,dtVisc)
         #endif
 
         for (int i = Nboundary; i < NfluidEnd; ++i)
@@ -382,12 +384,16 @@ double calculateDt(int Nboundary,
 
             dtCFL = min(dtCFL, particleDTCFL);
 
+            // Compute dtVisc based on viscosity
+            double particleDTVisc = 0.5 * h[i] * h[i] / (viscosity+1e-14);
+            dtVisc = min(dtVisc, particleDTVisc);
 
         }
         //cout << "Acceleration-based dt = "<< dtForce << endl;
         //cout << "Velocity-based dt = "<< dtCFL << endl;
+        //cout << "Viscosity-based dt = "<< dtVisc << endl;
 
-        double adaptivedt = min(dtForce, dtCFL);
+        double adaptivedt = min({dtForce, dtCFL, dtVisc});
         
 
         return adaptivedt;
@@ -2770,15 +2776,15 @@ int main()
                     - v[i]*v[i]
                 );
 
-            /*rho[i] =
+            rho[i] =
                 rho0*
                 pow(
                     1.0 + pInitial/B,
                     1.0/gammaEOS
-                );*/
+                );
 
-            rho[i] = useNoSlip ? rho0 :
-                rho0*pow(1.0 + pInitial/B, 1.0/gammaEOS);
+            /*rho[i] = useNoSlip ? rho0 :
+                rho0*pow(1.0 + pInitial/B, 1.0/gammaEOS);*/
 
 
             //pressureexact[i] = useNoSlip ? 0.0 : pInitial;
@@ -3605,6 +3611,7 @@ int main()
                 dvdt,
                 hp,
                 c0,
+                viscosity,
                 kernel,
                 neighbours);
             

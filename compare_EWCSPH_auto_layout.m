@@ -31,6 +31,7 @@ initialShowStreamlines = false;
 showCylinder = true;
 frameCacheSize = 60;   % Cache recently viewed frames per case (reduces slider/loop disk reads)
 startWithFloatingController = true;
+startWithCaseList = true; % Show a separate, hideable folder key (not part of exports)
 comparisonTimeStep = 0.1; % s, timeline spacing; actual frames are never invented
 maximumFrames = 1201; % cap on shared animation frames
 
@@ -265,6 +266,7 @@ timeEdit=uicontrol(controls,'Style','edit','Units','normalized', ...
 currentFrame=1;playing=false;showStreams=initialShowStreamlines;
 lastDragClock=tic; isUpdatingFrame=false;
 controllerFig=gobjects(1);controllerFloating=false;
+caseListFig=gobjects(1);
 lastStreamFrame=-1;
 % Export commands and keyboard navigation, in addition to on-screen controls.
 exportMenu=uimenu(fig,'Label','Export');
@@ -273,14 +275,68 @@ uimenu(exportMenu,'Label','Save synchronized MP4','Callback',@saveAnimation);
 controllerMenu=uimenu(fig,'Label','Controller');
 uimenu(controllerMenu,'Label','Float / move controller','Callback',@(~,~)floatController());
 uimenu(controllerMenu,'Label','Dock controller at bottom','Callback',@(~,~)dockController());
+caseMenu=uimenu(fig,'Label','Cases');
+uimenu(caseMenu,'Label','Show / hide folder key','Callback',@(~,~)toggleCaseList());
 set(fig,'WindowKeyPressFcn',@keyControl);
 set(fig,'CloseRequestFcn',@closeMainFigure);
 set(fig,'SizeChangedFcn',@(~,~)layoutPanels());
 if startWithFloatingController, floatController();end
 layoutPanels();
 setFrame(1,false);
+if startWithCaseList,showCaseList();end
 
 %% NESTED FUNCTIONS
+    function toggleCaseList()
+        if isgraphics(caseListFig)
+            hideCaseList();
+        else
+            showCaseList();
+        end
+    end
+
+    function showCaseList()
+        if isgraphics(caseListFig)
+            figure(caseListFig);
+            return;
+        end
+        % Standalone reference window: does not occupy plot space and is
+        % deliberately absent from both exportgraphics(fig) and getframe(fig).
+        mainPos=get(fig,'Position');
+        keyW=480;
+        keyH=min(440,max(125,62+29*nCases));
+        keyX=max(30,mainPos(1)+mainPos(3)-keyW);
+        keyY=max(40,mainPos(2)+mainPos(4)-keyH-30);
+        caseListFig=figure('Name','EWCSPH | Case folder key', ...
+            'NumberTitle','off','MenuBar','none','ToolBar','none', ...
+            'Color',[0.98 0.98 0.98],'Units','pixels', ...
+            'Position',[keyX keyY keyW keyH], ...
+            'Resize','on','CloseRequestFcn',@(~,~)hideCaseList());
+        uicontrol(caseListFig,'Style','text','Units','normalized', ...
+            'Position',[.025 .84 .95 .12], ...
+            'BackgroundColor',[0.98 0.98 0.98], ...
+            'HorizontalAlignment','left','FontWeight','bold', ...
+            'String','Panel order: top to bottom, left to right');
+        caseRows=cell(nCases,2);
+        for ci=1:nCases
+            caseRows{ci,1}=sprintf('Panel %d',ci);
+            caseRows{ci,2}=char(S{ci}.folder);
+        end
+        uitable(caseListFig,'Units','normalized', ...
+            'Position',[.025 .07 .95 .76], ...
+            'Data',caseRows,'ColumnName',{'Plot','Simulation folder (full path)'}, ...
+            'ColumnEditable',[false false], 'RowName',[], ...
+            'ColumnWidth',{75 355});
+    end
+
+    function hideCaseList()
+        if isgraphics(caseListFig)
+            h=caseListFig;
+            caseListFig=gobjects(1);
+            set(h,'CloseRequestFcn','');
+            delete(h);
+        end
+    end
+
     function keyControl(~,event)
         switch event.Key
             case {'rightarrow','d'}
@@ -474,6 +530,7 @@ setFrame(1,false);
     end
     function closeMainFigure(~,~)
         playing=false;
+        hideCaseList();
         if isgraphics(controllerFig)
             floatingHandle=controllerFig;
             set(floatingHandle,'CloseRequestFcn','');
