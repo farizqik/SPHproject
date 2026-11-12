@@ -59,13 +59,15 @@ const double c0 = 20.0*inletVelocity;
 
 const double gammaEOS = 7.0; 
 const double B = c0*c0*rho0/gammaEOS;
+const double Re = 100.0;  // Reynolds number
 
-const double viscosity = 5*1.0e-5;
-const double viscdr0 = 1.0e-5;
-const double tvis = 0.01;
 const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder;
-const double R = 20*Dcylinder;
+const double R = 10*Dcylinder;
+
+const double viscosity = inletVelocity*Dcylinder/Re;
+const double viscdr0 = 1.0e-5;
+const double tvis = 0.01;
 
 const double dr0 = sqrt(2.0*viscdr0*tvis);
 
@@ -77,7 +79,7 @@ const double deltadifussion = 0.0;
 
 
 const int NsupportLayers = 4;
-const int Nr = 115;
+const int Nr = 100;
 const int Nbuffer = 6;      // open-boundary buffer rings
 int NrTotal = Nr + Nbuffer;
 
@@ -85,7 +87,7 @@ int NrTotal = Nr + Nbuffer;
 int NTheta =  180;
 double dTheta0 = 2*PI/NTheta;
 
-vector<double> hlist = {1.3};
+vector<double> hlist = {2.0};
 
 
 // "no-slip"   = impulsively started viscous cylinder
@@ -385,7 +387,8 @@ double calculateDt(int Nboundary,
             dtCFL = min(dtCFL, particleDTCFL);
 
             // Compute dtVisc based on viscosity
-            double particleDTVisc = 0.5 * h[i] * h[i] / (viscosity+1e-14);
+            double maxViscosity = max(viscosity, viscdr0);
+            double particleDTVisc = 0.5 * h[i] * h[i] / (max(maxViscosity, 1.0e-14));
             dtVisc = min(dtVisc, particleDTVisc);
 
         }
@@ -766,6 +769,7 @@ double radialSum(double qA, int N)
 
     return (pow(qA, N) - 1.0) / (qA - 1.0);
 }
+
 
 // Geometry-only boundary neighbourhoods: fixed Eulerian positions and smoothing lengths.
 // These lists are built once and reused at every integration stage.
@@ -1298,6 +1302,7 @@ void applyRiemannBufferBoundary(
 
                 double utBuffer;
 
+                //if (unBuffer < 0.0)
                 if (unFar < 0.0)
                 {
                     // inflow
@@ -1495,9 +1500,6 @@ void PotentialFlowComparison(
         const double tauWall =
             mu*(utFluid - utWall)/dr;
 
-        /*const double tauWall =
-            0.0;*/
-
 
         const double dFxViscousSPH =
             tauWall*tx*ds;
@@ -1580,6 +1582,8 @@ void PotentialFlowComparison(
 
         const double CFLocalSPH =
             dFSPH/localForceReference;
+
+
 
         const double CfxLocalExact =
             dFxExact/localForceReference;
@@ -2624,7 +2628,7 @@ int main()
 
             // Derived metadata for MATLAB post-processing only
             constantsFile << "hasCylinder," << (Nboundary > 0 ? 1 : 0) << endl;
-            constantsFile << "Reynolds," << inletVelocity*Dcylinder/viscosity << endl;
+            constantsFile << "Reynolds," << Re << endl;
             constantsFile << "kernel," << kernel << endl;
             constantsFile << "Nh," << Nh << endl;
 

@@ -1,4 +1,4 @@
-function compare_EWCSPH_nearwall_streamlines(folderList)
+function compare_EWCSPH_streamfunction_contours(folderList)
 %COMPARE_EWCSPH_INTERACTIVE Responsive, synchronized EWCSPH comparison.
 %   compare_EWCSPH_matched_colours() opens multi-folder chooser (Ctrl/Shift+click).
 %   compare_EWCSPH_matched_colours({"C:\\Case1","C:\\Case2"}) uses supplied folders.
@@ -17,17 +17,23 @@ colorPercentiles = [5 95]; % Match original single-case MATLAB viewer
 colorSampleFrames = 5; % evenly spaced real snapshots per case used for auto limits
 playbackFPS = 60;   % Target playback speed; disk read/streamline tracing may limit actual FPS
 playbackFrameStride = 1; % Fast preview: advance 0.1 s per rendered frame; slider/video still use 0.1 s
-streamGridSize = 240;       % Cartesian streamline integration resolution
-streamSeedCount = 100;      % upstream arc seed count
-streamInteriorSpacing = 0.12; % as fraction of fluid-domain radius
-% Additional near-cylinder seeds, offsets measured in cylinder diameters D.
-nearWallSeedAngles = 48;       % number of equally spaced angular seeds per ring
-nearWallSeedOffsetsD = [0.20 0.50 1.00]; % radial distances from first fluid ring (in D)
-nearWallTraceBothDirections = true; % captures separation and recirculation around cylinder
-streamStep = 0.35;         % streamline integrator step (grid cells)
-streamMaxVertices = 850;
-streamPlaybackStride = 60;  % reduce costly streamline recomputation during preview
-initialShowStreamlines = false;
+streamGridSize = 300;       % Cartesian streamline integration resolution
+streamSeedSpacingD = 0.15; % Transverse spacing of incoming streamlines (in D)
+wakeSeedX_D = [0.85 1.10 1.40]; % A few recirculation seeds behind cylinder
+wakeSeedY_D = [0.08 -0.08 0.05];
+streamStep = 0.25;         % streamline integrator step (grid cells)
+streamMaxVertices = 1500;
+% Streamline rendering options:
+% "streamfunction" uses YOUR EWCSPH velocity snapshots, reconstructing
+% psi via a polar Poisson solution; "particle" retains original stream2.
+streamlineMethod = "streamfunction"; % "streamfunction" | "particle"
+streamfunctionSpacingD = 0.015;  % Delta psi/(U_inf*D); smaller = denser, GLOBAL
+streamfunctionNearWallContours = true;
+% Additional low-|psi| levels apply THROUGHOUT the domain, including wake.
+streamfunctionNearWallLevelsD = [0.0005 0.001 0.002 0.004 0.008 0.015 0.03 0.05];
+streamfunctionVorticitySource = "velocity"; % "velocity" | "solver"
+
+initialShowStreamlines = true;
 showCylinder = true;
 frameCacheSize = 60;   % Cache recently viewed frames per case (reduces slider/loop disk reads)
 startWithFloatingController = true;
@@ -127,6 +133,13 @@ for ic=1:nCases
     d.surfaceY=reshape(yD(surfaceRows(:)),size(surfaceRows));
     d.wallX=xD(wallRows);d.wallY=yD(wallRows);
     d.theta=theta;d.angleOrder=angleOrder;d.radii=radii;
+    % Precompute polar FFT/tridiagonal coefficients ONCE per case.
+    d.psiSolver=[];
+    if ~isempty(wallRows)
+        wallRadiusD=mean(hypot(xD(wallRows),yD(wallRows)));
+        d.psiSolver=ewcsphCreatePolarPsiSolver(theta,wallRadiusD,radii);
+    end
+
     d.currentFile=1;d.table=T;
     d.frameCacheIndices=1; d.frameCacheTables={T};
     S{ic}=d;
@@ -185,7 +198,7 @@ for ic=1:nCases
         'HitTest','off');
     WALL(ic).Visible=onoff(showCylinder);
     STREAM(ic)=line(AX(ic),nan,nan,nan,'Color',[0 0 0], ...
-        'LineWidth',0.8,'Visible','off','HitTest','off');
+        'LineWidth',0.65,'Visible','off','HitTest','off');
     view(AX(ic),2);
     set(AX(ic),'SortMethod','childorder', 'XLim',viewX_D,'YLim',viewY_D, ...
         'XLimMode','manual','YLimMode','manual', ...
@@ -201,6 +214,12 @@ setComparisonColormap();
 cb=colorbar(AX(end),'eastoutside');
 cb.Label.String=fieldLabel;
 cb.Units='pixels';
+if initialShowStreamlines
+    set(STREAM,'Visible','on');
+end
+% Keep field surface and colourbar visible beneath the streamline overlay.
+set(SURF,'Visible','on');
+cb.Visible='on';
 
 %% SHARED INTERACTIVE CONTROLS
 controls=uipanel(fig,'Units','pixels','BorderType','none', ...
@@ -675,10 +694,12 @@ if startWithCaseList,showCaseList();end
         showStreams=logical(streamCheck.Value);
         for j=1:nCases
             if isgraphics(STREAM(j))
-                if showStreams, STREAM(j).Visible='on';
-                else, STREAM(j).Visible='off'; end
+                STREAM(j).Visible=onoff(showStreams);
             end
+            % Streamlines are an overlay; toggling them must not hide the field.
+            if isgraphics(SURF(j)), SURF(j).Visible='on'; end
         end
+        if isgraphics(cb), cb.Visible='on'; end
         if showStreams, lastStreamFrame=-1;setFrame(currentFrame,false); end
     end
 
@@ -687,8 +708,9 @@ if startWithCaseList,showCaseList();end
         isUpdatingFrame=true;
         currentFrame=max(1,min(nFrames,round(frameNumber)));
         target=masterTimes(currentFrame);
-        updateStream=showStreams && (~isPlayback || lastStreamFrame<0 || ...
-            mod(currentFrame-1,streamPlaybackStride)==0);
+        % Trace streamlines from the velocity field of EVERY displayed frame,
+        % including playback and MP4 export (not just every 60th frame).
+        updateStream=showStreams;
         actualTimes=nan(nCases,1);
         for j=1:nCases
             d=S{j};
@@ -749,6 +771,37 @@ if startWithCaseList,showCaseList();end
     end
 
     function [allX,allY,nPaths]=computeStreamlines(d,T)
+        if streamlineMethod == "streamfunction" && ~isempty(d.psiSolver)
+            % Uses SPH velocities of the actual selected CSV snapshot.
+            % Conversion U/U_inf, V/U_inf and r/D gives psi/(U_inf*D).
+            U=reshape(T.u(d.fluidRows),d.nTheta,[]);
+            V=reshape(T.v(d.fluidRows),d.nTheta,[]);
+            U=U(d.angleOrder,:)/d.Uinf;
+            V=V(d.angleOrder,:)/d.Uinf;
+            if streamfunctionVorticitySource == "solver"
+                omega=reshape(T.vorticity(d.fluidRows),d.nTheta,[]);
+                omega=omega(d.angleOrder,:)*d.D/d.Uinf;
+            else
+                omega=ewcsphPolarCurl(d.psiSolver,U,V);
+            end
+            psi=ewcsphSolvePolarPsi(d.psiSolver,U,V,omega);
+            step=streamfunctionSpacingD;
+            if ~isfinite(step) || step<=0
+                error('streamfunctionSpacingD must be a positive finite number.');
+            end
+            zmax=max(abs(psi(:)));
+            nLevel=min(800,ceil(zmax/step));
+            levels=(-nLevel:nLevel)*step;
+            if streamfunctionNearWallContours
+                extra=abs(streamfunctionNearWallLevelsD(:)');
+                extra=extra(isfinite(extra)&extra>0);
+                levels=sort(unique([levels -extra extra]));
+            end
+            [allX,allY]=ewcsphPsiContourXY(d.psiSolver,psi,levels);
+            nPaths=sum(isnan(allX));
+            return;
+        end
+        % Original stream2() mode, unchanged.
         % Native polar-ring interpolation matches the user's viewer.
         U=reshape(T.u(d.fluidRows),d.nTheta,[]);
         V=reshape(T.v(d.fluidRows),d.nTheta,[]);
@@ -763,62 +816,50 @@ if startWithCaseList,showCaseList();end
         gu=Fu(qa,qr);gv=Fv(qa,qr);
         invalid=qr<inner | qr>outer;
         gu(invalid)=NaN;gv(invalid)=NaN;
-        % Upstream seeds along an arc INSIDE the physical fluid region.
+        % =========================================================
+        % Paper-style streamlines: equally spaced upstream seeds,
+        % with a few additional seeds in the recirculation region.
+        % All locations are nondimensionalised by cylinder diameter.
+        % =========================================================
         direction=[1 0];
-        if any(isfinite(T.u(d.fluidRows)))
-            % Use inflow angle in metadata if present; fallback to +x.
-            try
-                cc=readcell(fullfile(d.folder,'SimulationConstants.csv'),'Delimiter',',');
-                phi=metaNumber(cc,'flowAngleDeg')*pi/180;
-                direction=[cos(phi),sin(phi)];
-            catch
-            end
+        try
+            cc=readcell(fullfile(d.folder,'SimulationConstants.csv'),'Delimiter',',');
+            phi=metaNumber(cc,'flowAngleDeg')*pi/180;
+            direction=[cos(phi),sin(phi)];
+        catch
+            % Default incident flow is along positive x.
         end
         normal=[-direction(2),direction(1)];
-        sr=0.88*outer;
-        transverse=linspace(-0.94*sr,0.94*sr,streamSeedCount);
-        longitudinal=-sqrt(max(0,sr.^2-transverse.^2));
+
+        % Regularly spaced seeds across the visible transverse extent.
+        % Place them on a circular arc inside the radial computational domain.
+        sr=0.90*outer;
+        transverse=viewY_D(1):streamSeedSpacingD:viewY_D(2);
+        transverse=transverse(abs(transverse)<sr-2*outer/(streamGridSize-1));
+        longitudinal=-sqrt(max(0,sr^2-transverse.^2));
         sx=longitudinal*direction(1)+transverse*normal(1);
         sy=longitudinal*direction(2)+transverse*normal(2);
-        % Additional seeds in wake for vortical / recirculating regions.
-        step=streamInteriorSpacing*outer;
-        [px,py]=meshgrid(-0.55*outer:step:0.8*outer, ...
-                         -0.70*outer:step:0.70*outer);
-        rr=hypot(px,py);
-        select=(rr>inner+0.06*outer)&(rr<0.85*outer);
-        px=px(select);py=py(select);
-        xLocal=px*direction(1)+py*normal(1);
-        yLocal=px*direction(2)+py*normal(2);
 
-        % Near-cylinder annular seeds. Unlike streamInteriorSpacing, these
-        % offsets are in D, so increasing the outer computational radius
-        % does not reduce streamline density near the cylinder.
-        % Stay at least ~2 Cartesian grid cells away from the inner mask
-        % to avoid stream2 terminating before it can take a step.
-        cellWidth=2*outer/(streamGridSize-1);
-        safeOffset=max(0.10,2.2*cellWidth);
-        seedRadii=inner+max(nearWallSeedOffsetsD(:)',safeOffset);
-        seedRadii=seedRadii(seedRadii < outer-2.2*cellWidth);
-        nearTheta=(0:nearWallSeedAngles-1)*(2*pi/nearWallSeedAngles);
-        [angleMesh,radiusMesh]=meshgrid(nearTheta,seedRadii);
-        nearX=radiusMesh(:).*cos(angleMesh(:));
-        nearY=radiusMesh(:).*sin(angleMesh(:));
-        % Keep only valid seeded points in the interpolated fluid region.
-        nearGood=isfinite(Fu(mod(atan2(nearY,nearX),2*pi),hypot(nearX,nearY))) & ...
-                 isfinite(Fv(mod(atan2(nearY,nearX),2*pi),hypot(nearX,nearY)));
-        nearX=nearX(nearGood); nearY=nearY(nearGood);
+        % Supplement a small number of wake/recirculation streamlines.
+        wakeX=wakeSeedX_D*direction(1)+wakeSeedY_D*normal(1);
+        wakeY=wakeSeedX_D*direction(2)+wakeSeedY_D*normal(2);
+        wr=hypot(wakeX,wakeY);
+        validWake=wr>inner+2*outer/(streamGridSize-1) & ...
+                  wr<outer-2*outer/(streamGridSize-1);
+        wakeX=wakeX(validWake);wakeY=wakeY(validWake);
+        validWake=isfinite(Fu(mod(atan2(wakeY,wakeX),2*pi), ...
+                               hypot(wakeX,wakeY))) & ...
+                  isfinite(Fv(mod(atan2(wakeY,wakeX),2*pi), ...
+                               hypot(wakeX,wakeY)));
+        wakeX=wakeX(validWake);wakeY=wakeY(validWake);
 
         opts2=[streamStep streamMaxVertices];
-        pA=stream2(gx,gy,gu,gv,sx,sy,opts2);
-        pB=stream2(gx,gy,gu,gv,xLocal,yLocal,opts2);
-        pC=stream2(gx,gy,-gu,-gv,xLocal,yLocal,opts2);
-        pNear=stream2(gx,gy,gu,gv,nearX,nearY,opts2);
-        if nearWallTraceBothDirections
-            pNearBack=stream2(gx,gy,-gu,-gv,nearX,nearY,opts2);
-            allPaths=[pA(:);pB(:);pC(:);pNear(:);pNearBack(:)];
-        else
-            allPaths=[pA(:);pB(:);pC(:);pNear(:)];
-        end
+        pUpstream=stream2(gx,gy,gu,gv,sx,sy,opts2);
+        pWake=stream2(gx,gy,gu,gv,wakeX,wakeY,opts2);
+        % Backward tracing only for sparse wake seeds, so closed
+        % recirculating patterns can be seen without crowding the field.
+        pWakeBackward=stream2(gx,gy,-gu,-gv,wakeX,wakeY,opts2);
+        allPaths=[pUpstream(:);pWake(:);pWakeBackward(:)];
         allX=[];allY=[];nPaths=0;
         for kk=1:numel(allPaths)
             p=allPaths{kk};
@@ -912,4 +953,131 @@ function map=blueWhiteRed(n)
 n1=floor(n/2);n2=n-n1;
 map=[linspace(0,1,n1)' linspace(0,1,n1)' ones(n1,1); ...
      ones(n2,1) linspace(1,0,n2)' linspace(1,0,n2)'];
+end
+
+function S = ewcsphCreatePolarPsiSolver(theta,wallRadius,fluidRadii)
+% Sparse-free spectral polar Poisson solver: FFT in theta, tridiagonal
+% finite-volume operator in r. Factorisation is precomputed ONCE.
+    theta=theta(:);
+    r=[wallRadius;fluidRadii(:)];
+    nt=numel(theta); nr=numel(r);
+    if nt<4 || nr<3 || any(diff(r)<=0)
+        error('Invalid polar ring geometry for streamfunction reconstruction.');
+    end
+    dtheta=2*pi/nt;
+    if max(abs(diff([theta;theta(1)+2*pi])-dtheta))>0.05*dtheta
+        error('Streamfunction reconstruction requires near-uniform angular spacing.');
+    end
+    i=2:nr-1;
+    rm=r(i-1); ri=r(i); rp=r(i+1);
+    drCell=0.5*(rp-rm);
+    a=(0.5*(ri+rm))./(ri.*drCell.*(ri-rm));
+    c=(0.5*(ri+rp))./(ri.*drCell.*(rp-ri));
+    % Eigenvalues of the second-order periodic angular Laplacian.
+    modes=(0:nt-1)';
+    angularEigenvalue=4*sin(pi*modes/nt).^2/dtheta^2;
+    diagCoeffs=-(a'+c')-angularEigenvalue*(1./ri'.^2);
+    nw=numel(i);
+    invPiv=zeros(nt,nw);
+    upper=zeros(nt,nw);
+    invPiv(:,1)=1./diagCoeffs(:,1);
+    if nw>1
+        upper(:,1)=c(1)*invPiv(:,1);
+    end
+    for k=2:nw
+        invPiv(:,k)=1./(diagCoeffs(:,k)-a(k)*upper(:,k-1));
+        if k<nw,upper(:,k)=c(k)*invPiv(:,k);end
+    end
+    % Signed Fourier indices for reconstructing psi at the outer boundary.
+    freq=(0:nt-1)';
+    freq(freq>floor(nt/2))=freq(freq>floor(nt/2))-nt;
+    S=struct('theta',theta,'r',r,'nt',nt,'nr',nr, ...
+             'a',a,'c',c,'invPiv',invPiv,'upper',upper, ...
+             'frequency',freq,'dtheta',dtheta);
+end
+
+function omega=ewcsphPolarCurl(S,U,V)
+% curl_z = (1/r)*d(r*u_theta)/dr - (1/r)*du_r/dtheta
+% Reconstructs vorticity from the actual particle velocity data.
+    theta=S.theta; rr=S.r(2:end)';
+    ct=cos(theta);st=sin(theta);
+    ur=U.*ct+V.*st;
+    ut=-U.*st+V.*ct;
+    A=ut.*rr;
+    dA=zeros(size(A));
+    dA(:,1)=(A(:,2)-A(:,1))/(rr(2)-rr(1));
+    dA(:,end)=(A(:,end)-A(:,end-1))/(rr(end)-rr(end-1));
+    for j=2:numel(rr)-1
+        hm=rr(j)-rr(j-1); hp=rr(j+1)-rr(j);
+        dA(:,j)=(-hp/(hm*(hm+hp)))*A(:,j-1) ...
+             +((hp-hm)/(hm*hp))*A(:,j) ...
+             +(hm/(hp*(hm+hp)))*A(:,j+1);
+    end
+    dUrTheta=(circshift(ur,-1,1)-circshift(ur,1,1))/(2*S.dtheta);
+    omega=(dA-dUrTheta)./rr;
+end
+
+function psi=ewcsphSolvePolarPsi(S,U,V,omega)
+% Delta psi=-omega; psi=0 on cylinder; outer Dirichlet psi derived from
+% SPH radial velocity, not imposed from a potential-flow model.
+    ct=cos(S.theta);st=sin(S.theta);
+    urOuter=U(:,end).*ct+V(:,end).*st;
+    urOuter=urOuter-mean(urOuter,'omitnan');
+    if any(~isfinite(urOuter(:))) || any(~isfinite(omega(:)))
+        error('Non-finite SPH velocities/vorticity cannot reconstruct psi.');
+    end
+    freq=S.frequency;
+    fluxHat=fft(S.r(end)*urOuter);
+    psiOuterHat=zeros(S.nt,1);
+    nonzero=freq~=0;
+    if rem(S.nt,2)==0
+        nonzero(S.nt/2+1)=false; % Nyquist derivative is ambiguous
+    end
+    psiOuterHat(nonzero)=fluxHat(nonzero)./(1i*freq(nonzero));
+    psiOuter=real(ifft(psiOuterHat));
+
+    rhsHat=fft(-omega(:,1:end-1),[],1);
+    rhsHat(:,end)=rhsHat(:,end)-S.c(end)*fft(psiOuter);
+    nw=size(rhsHat,2);
+    dp=zeros(size(rhsHat));
+    dp(:,1)=rhsHat(:,1).*S.invPiv(:,1);
+    for j=2:nw
+        dp(:,j)=(rhsHat(:,j)-S.a(j)*dp(:,j-1)).*S.invPiv(:,j);
+    end
+    sol=zeros(size(rhsHat));
+    sol(:,end)=dp(:,end);
+    for j=nw-1:-1:1
+        sol(:,j)=dp(:,j)-S.upper(:,j).*sol(:,j+1);
+    end
+    psiHat=[zeros(S.nt,1),sol,fft(psiOuter)];
+    psi=real(ifft(psiHat,[],1));
+end
+
+function [xx,yy]=ewcsphPsiContourXY(S,psi,levels)
+% Generate complete constant-psi curves on the native SPH polar rings.
+% Uniform and near-zero levels share one global contour solve: no crop.
+    r=S.r(:)';
+    theta=[S.theta;S.theta(1)+2*pi];
+    psiPeriodic=[psi;psi(1,:)];
+    if numel(levels)<2
+        xx=NaN;yy=NaN;return;
+    end
+    C=contourc(r,theta,psiPeriodic,levels);
+    % MATLAB's contour matrix stores a header then vertex coordinates.
+    xParts=cell(0,1); yParts=cell(0,1);
+    pos=1;
+    while pos<=size(C,2)
+        n=round(C(2,pos));
+        if ~isfinite(n)||n<2||pos+n>size(C,2),break;end
+        rc=C(1,pos+1:pos+n);
+        tc=C(2,pos+1:pos+n);
+        xParts{end+1,1}=[rc(:).*cos(tc(:));NaN]; %#ok<AGROW>
+        yParts{end+1,1}=[rc(:).*sin(tc(:));NaN]; %#ok<AGROW>
+        pos=pos+n+1;
+    end
+    if isempty(xParts)
+        xx=NaN;yy=NaN;
+    else
+        xx=vertcat(xParts{:});yy=vertcat(yParts{:});
+    end
 end

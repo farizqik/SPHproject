@@ -1,10 +1,10 @@
-function EWCSPH_MATLAB_ViscousSinglePlot_v2_nondimensional_all_axis_controls(simulationFolder,testScenario)
+function EWCSPH_MATLAB_continuous_streamfunction_contours(simulationFolder,testScenario)
 
 %% =========================================================
 % DATASET SELECTION
 % ==========================================================
 
-maxFrames = 1000;  % Change this as needed
+maxFrames = 1001;  % Change this as needed
 
 if nargin < 1 || strlength(string(simulationFolder)) == 0
 
@@ -168,13 +168,50 @@ videoQuality = 95;
 
 showStreamlines = false;
 
-% Denser streamline interpolation/seeding for both SPH and potential flow.
-streamGridSize = 220;  % Reduced Cartesian grid for interactive streamline tracing
+% TWO-RESOLUTION STREAMLINE TRACING (visualisation only):
+% The global grid traces the outer flow; the local high-resolution grid
+% traces lines from very near the cylinder surface.
+streamGridSize = 300;         % Global/coarse Cartesian grid
+localGridSize = 800;         % Local Cartesian grid (800 points per direction)
+localExtentD = 1.5;         % Local grid spans +/- 1.5 cylinder diameters
+localStreamMaxVertices = 1400;
+% The near-wall interpolation is only defined from the first physical-fluid
+% ring outwards; no velocity values are fabricated inside that ring.
 
-streamSeedCount = 70;  % Upstream boundary seeds; additional interior seeds cover the wake
+% Tidy, paper-like streamline seeding (coordinates scaled by D).
+streamSeedSpacingD = 0.23;       % Sparse incoming streamlines AWAY from cylinder (in D)
+streamVisibleHalfWidthD = 1.3;  % Transverse extent of upstream streamline seeds (in D)
+nearCylinderBandD = 0.80;       % Dense central band: |y/D| <= this value
+nearCylinderSeedSpacingD = 0.055; % MAIN CONTROL: lower = more streamlines near cylinder
+wakeSeedX_D = [0.85 1.10 1.40]; % A few seeds to expose recirculation
+wakeSeedY_D = [0.08 -0.08 0.05];
+% LOCAL SURFACE DETAIL: annular seeds trace streamlines right next to the wall.
+% Decrease surfaceSeedSpacingD for more curves around the circumference.
+includeNearCylinderSeeds = true;
+surfaceSeedSpacingD = 0.075;     % Circumferential seed separation / D (smaller = denser)
+surfaceSeedOffsetsD = [0.015 0.030 0.060 0.100]; % Seed rings outward from wall / D
+% Grid must also be fine enough to resolve near-wall trajectories.
 streamStep = 0.30;     % stream2 step measured in grid cells
 streamMaxVertices = 1000; % Limit tracing cost per seed
 streamPlaybackStride = 4; % Update streamlines every 4 frames during playback
+
+% STREAMFUNCTION CONTOUR MODE: reconstruct psi from C++ SPH u/v.
+% "streamfunction" = contours of a solenoidal reconstruction of SPH u/v.
+% "particle" = previous stream2() velocity-path tracing.
+streamlineMethod = "streamfunction";
+streamfunctionSpacingD = 0.06;  % Delta-psi/(U_inf*D); smaller = more contour lines
+streamfunctionVorticitySource = "velocity"; % "velocity" or "solver" (CSV vorticity)
+streamfunctionNearWallContours = true;
+% Extra near-wall contour LEVELS now extend across the WHOLE fluid domain.
+% Never clip their paths to a near-wall radius: clipping creates broken lines.
+% These are psi/(U_inf*D) values, not physical offsets from the surface.
+streamfunctionNearWallLevelsD = [0.0005 0.001 0.002 0.004 0.008 0.015 0.03 0.05];
+% All contour levels are global: they remain the SAME on the downstream side.
+% If too many nearly overlapping near-wall/wake contours occur, remove some
+% of the smallest numbers above; do not limit their spatial extent.
+
+
+lineProfileSamples = 300; % Number of samples between drawn endpoints
 
 showVelocityArrows = false;
 
@@ -922,6 +959,9 @@ radialDiagnosticsTab = uitab( ...
     tabGroup, ...
     'Title','Radial Stagnation Profiles');
 
+% Interactive A-to-B field profile, synchronized with selected field/frame.
+lineProfileTab = uitab(tabGroup,'Title','Line Profile');
+
 % =========================================================
 % FLOW FIELD TAB -- SPH VS ANALYTICAL POTENTIAL FLOW
 % =========================================================
@@ -1101,6 +1141,17 @@ angles = mod(atan2(firstFrame(angleRingRows,2)-streamCenter(2), ...
                   firstFrame(angleRingRows,1)-streamCenter(1)),2*pi);
 [angles,angleOrder] = sort(angles);
 angles = [angles(end)-2*pi; angles; angles(1)+2*pi];
+profileThetaGrid = angles; % Private stable interpolation grid
+
+% Native annular-grid Poisson solver coefficients are fixed for all frames.
+% No velocity field or streamline is invented; only the velocity-derived
+% streamfunction's solenoidal component is reconstructed.
+psiSolver = [];
+if hasCylinder
+    psiSolver = ewcsphCreatePolarPsiSolver( ...
+        angles(2:end-1),innerRadius,streamRadii);
+end
+
 
 [streamX,streamY] = meshgrid( ...
     linspace(streamCenter(1)-outerRadius,streamCenter(1)+outerRadius,streamGridSize), ...
@@ -1110,52 +1161,94 @@ queryR = hypot(streamX-streamCenter(1),streamY-streamCenter(2));
 queryTheta = mod(atan2(streamY-streamCenter(2),streamX-streamCenter(1)),2*pi);
 streamMask = queryR < streamRadii(1) | queryR > streamRadii(end);
 
+% High-resolution LOCAL Cartesian grid, centred on the cylinder.
+% Used solely to integrate the additional near-wall streamline paths.
+if localGridSize < 10 || localExtentD <= 0
+    error('localGridSize must be >=10 and localExtentD must be positive.');
+end
+localHalfWidth = localExtentD*cylinderDiameter;
+[localStreamX,localStreamY] = meshgrid( ...
+    linspace(streamCenter(1)-localHalfWidth,streamCenter(1)+localHalfWidth,localGridSize), ...
+    linspace(streamCenter(2)-localHalfWidth,streamCenter(2)+localHalfWidth,localGridSize));
+localQueryR = hypot(localStreamX-streamCenter(1),localStreamY-streamCenter(2));
+localQueryTheta = mod(atan2(localStreamY-streamCenter(2), ...
+                             localStreamX-streamCenter(1)),2*pi);
+localStreamMask = localQueryR < streamRadii(1) | localQueryR > streamRadii(end);
+localCellWidth = 2*localHalfWidth/(localGridSize-1);
+
 flowUnit = [cosd(flowAngleDeg),sind(flowAngleDeg)];
 normalUnit = [-flowUnit(2),flowUnit(1)];
 
-% Seed points are INSIDE the fluid annulus, not on a straight line outside
-% the circular computational domain. Interior seeds fill wake/recirculation.
+% Paper-like seeds: regular upstream lines plus only a few wake seeds.
+% Deliberately avoid the old scattered interior grid: tracing that grid
+% in both directions produced many overlapping, untidy curves.
 streamOuter = streamRadii(end);
-streamlineZ = max(1e-4, 0.01*streamOuter); % Draw ABOVE the z=0 surface
+streamlineZ = max(1e-4, 0.01*streamOuter);
 streamInner = streamRadii(1);
-seedRadius = 0.92*streamOuter;
-seedCross = linspace(-0.94*seedRadius,0.94*seedRadius,streamSeedCount);
-upstreamDistance = sqrt(max(0,seedRadius^2-seedCross.^2));
-seedX = streamCenter(1)-upstreamDistance*flowUnit(1)+seedCross*normalUnit(1);
-seedY = streamCenter(2)-upstreamDistance*flowUnit(2)+seedCross*normalUnit(2);
+seedRadius = 0.90*streamOuter;
 
-% Distributed, staggered interior seeds: focus on the wake while still
-% covering the full disk. Trace these in BOTH directions.
-interiorParallel = [];
-interiorNormal = [];
-interiorStep = 0.18*streamOuter;
-for xLocal = -0.60*streamOuter:interiorStep:0.75*streamOuter
-    yLimit = sqrt(max(0,(0.88*streamOuter)^2-xLocal^2));
-    ySamples = -yLimit:interiorStep:yLimit;
-    for yLocal = ySamples
-        rLocal = hypot(xLocal,yLocal);
-        if rLocal > streamInner + 0.10*streamOuter && ...
-                rLocal < 0.89*streamOuter
-            interiorParallel(end+1) = xLocal; %#ok<AGROW>
-            interiorNormal(end+1) = yLocal; %#ok<AGROW>
+% Adaptive upstream seeding:
+%   sparse beyond the central band, dense in |y/D| <= nearCylinderBandD.
+% Both zones are centred on zero, so an upstream centreline seed exists.
+if streamSeedSpacingD <= 0 || nearCylinderSeedSpacingD <= 0 || ...
+        nearCylinderBandD < 0 || streamVisibleHalfWidthD <= 0
+    error('Streamline seed spacings and half-width must be positive.');
+end
+bandD = min(nearCylinderBandD,streamVisibleHalfWidthD);
+nNear = max(1,ceil(bandD/nearCylinderSeedSpacingD));
+nearCrossD = (-nNear:nNear)*nearCylinderSeedSpacingD;
+nearCrossD = nearCrossD(abs(nearCrossD) <= bandD+1e-12);
+% Outer seeds start *outside* the dense band (no duplicate lines there).
+nFar = ceil(streamVisibleHalfWidthD/streamSeedSpacingD);
+farCrossD = (-nFar:nFar)*streamSeedSpacingD;
+farCrossD = farCrossD(abs(farCrossD) <= streamVisibleHalfWidthD+1e-12 & ...
+                         abs(farCrossD) > bandD+0.5*nearCylinderSeedSpacingD);
+seedCrossD = unique([nearCrossD,farCrossD]);
+seedCross = seedCrossD*cylinderDiameter;
+cellWidth = 2*outerRadius/(streamGridSize-1);
+seedCross = seedCross(abs(seedCross) < seedRadius-2.5*cellWidth);
+upstreamDistance = -sqrt(max(0,seedRadius^2-seedCross.^2));
+seedX = streamCenter(1)+upstreamDistance*flowUnit(1)+seedCross*normalUnit(1);
+seedY = streamCenter(2)+upstreamDistance*flowUnit(2)+seedCross*normalUnit(2);
+
+% Sparse wake seeds for recirculation; no whole-domain interior seeds.
+wakeParallel = wakeSeedX_D(:)'*cylinderDiameter;
+wakeNormal = wakeSeedY_D(:)'*cylinderDiameter;
+interiorSeedX = streamCenter(1)+wakeParallel*flowUnit(1)+wakeNormal*normalUnit(1);
+interiorSeedY = streamCenter(2)+wakeParallel*flowUnit(2)+wakeNormal*normalUnit(2);
+wakeR = hypot(interiorSeedX-streamCenter(1),interiorSeedY-streamCenter(2));
+wakeGood = wakeR > streamInner+2.5*cellWidth & wakeR < streamOuter-2.5*cellWidth;
+interiorSeedX = interiorSeedX(wakeGood);
+interiorSeedY = interiorSeedY(wakeGood);
+
+% Several tightly spaced annular layers just OUTSIDE the cylinder.
+% Stagger angular locations between rings to reveal distinct near-wall paths.
+% Never seed inside the wall or too close to the masked Cartesian grid.
+nearSeedX = []; nearSeedY = [];
+if hasCylinder && includeNearCylinderSeeds
+    if surfaceSeedSpacingD <= 0 || isempty(surfaceSeedOffsetsD) || ...
+            any(surfaceSeedOffsetsD <= 0)
+        error('Surface seed spacing and offsets must be positive.');
+    end
+    rPrev = -Inf;
+    for ir = 1:numel(surfaceSeedOffsetsD)
+        % Positions are in physical metres; settings are nondimensional /D.
+        seedR = max(innerRadius + surfaceSeedOffsetsD(ir)*cylinderDiameter, ...
+                    streamInner + 2.5*localCellWidth);
+        if seedR >= min(streamOuter,localHalfWidth) - 2.5*localCellWidth || ...
+                seedR-rPrev < 0.7*localCellWidth
+            continue; % skip invalid or effectively identical rings
         end
+        rPrev = seedR;
+        nAround = max(12,ceil(2*pi*seedR/(surfaceSeedSpacingD*cylinderDiameter)));
+        offsetAngle = mod(ir,2)*pi/nAround; % stagger rings to reduce identical paths
+        th = (0:nAround-1)*(2*pi/nAround) + offsetAngle;
+        newX = streamCenter(1)+seedR*cos(th);
+        newY = streamCenter(2)+seedR*sin(th);
+        nearSeedX = [nearSeedX,newX]; %#ok<AGROW>
+        nearSeedY = [nearSeedY,newY]; %#ok<AGROW>
     end
 end
-% A few extra seeds resolve the wake directly behind the cylinder.
-if hasCylinder
-    wakeParallel = linspace(1.4*innerRadius,0.72*streamOuter,8);
-    wakeNormal = [-0.75 0 0.75]*innerRadius;
-    for yy = wakeNormal
-        for xx = wakeParallel
-            if hypot(xx,yy) > streamInner + 0.02*streamOuter
-                interiorParallel(end+1) = xx; %#ok<AGROW>
-                interiorNormal(end+1) = yy; %#ok<AGROW>
-            end
-        end
-    end
-end
-interiorSeedX = streamCenter(1) + interiorParallel*flowUnit(1) + interiorNormal*normalUnit(1);
-interiorSeedY = streamCenter(2) + interiorParallel*flowUnit(2) + interiorNormal*normalUnit(2);
 
 % Cache of analytical streamline polylines; exact potential flow is static.
 exactStreamlineXY = [];
@@ -1625,58 +1718,64 @@ ylabel(axTangential,'(r - r_0) / D');
 title(axTangential,'Absolute tangential velocity along a radial line');
 
 %% =========================================================
-% NEW: STAGNATION-POINT RADIAL DIAGNOSTICS (NON-DESTRUCTIVE)
+% GENERAL RADIAL PROFILES: ANY ANGLE, ANY AVAILABLE FIELD
 % ==========================================================
-% Uses the ORIGINAL C++ particle values, not interpolated SPH fields.
-% The analytical pressure/velocity is evaluated at those same positions.
-% Wall + requested physical-fluid rings at 0 and 180 degrees are shown.
+% Original C++ values at the nearest angular particle ray (no
+% fabricated spatial values). One plot with optional analytical reference.
+radialDiagnosticsTab.Title = 'Radial Profiles';
 
 uicontrol(radialDiagnosticsTab,'Style','text', ...
-    'String','Quantity:', 'Units','normalized', ...
-    'Position',[0.035 0.922 0.10 0.045], ...
+    'String','Angle (deg):','Units','normalized', ...
+    'Position',[0.025 0.925 0.11 0.04], ...
     'HorizontalAlignment','right','BackgroundColor','w');
-radialQuantityMenu = uicontrol(radialDiagnosticsTab,'Style','popupmenu', ...
-    'String',{'Pressure (Pa)','Radial velocity (m/s)'}, ...
-    'Value',1,'Units','normalized','BackgroundColor','w', ...
-    'Position',[0.14 0.927 0.23 0.045]);
+radialAngleEdit = uicontrol(radialDiagnosticsTab,'Style','edit', ...
+    'String','0','Units','normalized','BackgroundColor','w', ...
+    'Position',[0.14 0.928 0.075 0.043]);
+
 uicontrol(radialDiagnosticsTab,'Style','text', ...
-    'String','Fluid rings:', 'Units','normalized', ...
-    'Position',[0.39 0.922 0.12 0.045], ...
+    'String','Parameter:','Units','normalized', ...
+    'Position',[0.225 0.925 0.10 0.04], ...
+    'HorizontalAlignment','right','BackgroundColor','w');
+radialParameterKeys = [allowedVariables, "ur", "ut"];
+radialParameterNames = [parameterLabels, ...
+    "Radial velocity u_r", "Tangential velocity u_theta"];
+radialQuantityMenu = uicontrol(radialDiagnosticsTab,'Style','popupmenu', ...
+    'String',cellstr(radialParameterNames), ...
+    'Value',find(radialParameterKeys=="pressure",1), ...
+    'Units','normalized','BackgroundColor','w', ...
+    'Position',[0.33 0.928 0.30 0.043]);
+
+uicontrol(radialDiagnosticsTab,'Style','text', ...
+    'String','Fluid rings:','Units','normalized', ...
+    'Position',[0.645 0.925 0.095 0.04], ...
     'HorizontalAlignment','right','BackgroundColor','w');
 radialRingsEdit = uicontrol(radialDiagnosticsTab,'Style','edit', ...
-    'String','10', 'Units','normalized', ...
-    'Position',[0.52 0.928 0.075 0.043], ...
+    'String',num2str(nRings),'Units','normalized', ...
+    'Position',[0.745 0.928 0.07 0.043], ...
     'BackgroundColor','w');
 radialRefreshButton = uicontrol(radialDiagnosticsTab,'Style','pushbutton', ...
     'String','Refresh','Units','normalized', ...
-    'Position',[0.615 0.927 0.11 0.045]);
+    'Position',[0.83 0.927 0.11 0.045]);
+
 radialDiagnosticsInfo = uicontrol(radialDiagnosticsTab,'Style','text', ...
     'String','','Units','normalized', ...
-    'Position',[0.055 0.845 0.88 0.06], ...
+    'Position',[0.06 0.858 0.88 0.05], ...
     'HorizontalAlignment','left','BackgroundColor','w');
-axRadial0 = axes(radialDiagnosticsTab,'Position',[0.085 0.19 0.38 0.59]);
-axRadial180 = axes(radialDiagnosticsTab,'Position',[0.575 0.19 0.38 0.59]);
-radialAxes = [axRadial0,axRadial180];
-radialSPHPlots = gobjects(1,2);
-radialExactPlots = gobjects(1,2);
-for radialSide = 1:2
-    radialSPHPlots(radialSide) = plot(radialAxes(radialSide), ...
-        NaN,NaN,'o-','LineWidth',1.6,'MarkerSize',5, ...
-        'DisplayName','Eulerian SPH');
-    hold(radialAxes(radialSide),'on');
-    radialExactPlots(radialSide) = plot(radialAxes(radialSide), ...
-        NaN,NaN,'--','LineWidth',1.8, ...
-        'DisplayName','Analytical potential flow');
-    grid(radialAxes(radialSide),'on');
-    box(radialAxes(radialSide),'on');
-    xlabel(radialAxes(radialSide),'(r-r_0)/D');
-    ylabel(radialAxes(radialSide),'Pressure (Pa)');
-    legend(radialAxes(radialSide),'Location','best');
-end
+
+axRadialProfile = axes(radialDiagnosticsTab, ...
+    'Position',[0.10 0.16 0.82 0.65]);
+radialSPHPlot = plot(axRadialProfile,NaN,NaN,'o-', ...
+    'LineWidth',1.6,'MarkerSize',4,'DisplayName','Eulerian SPH');
+hold(axRadialProfile,'on');
+radialExactPlot = plot(axRadialProfile,NaN,NaN,'--', ...
+    'LineWidth',1.8,'DisplayName','Analytical potential flow');
+grid(axRadialProfile,'on');
+box(axRadialProfile,'on');
+xlabel(axRadialProfile,'(r-r_0)/D');
+ylabel(axRadialProfile,'Pressure (Pa)');
+legend(axRadialProfile,'Location','best');
 if isViscousTest
-    for radialSide = 1:2
-        radialExactPlots(radialSide).Visible = 'off';
-    end
+    radialExactPlot.Visible = 'off';
 end
 
 %% =========================================================
@@ -1896,10 +1995,16 @@ parameterText = uicontrol( ...
     'Units','normalized', ...
     'Position',[0.49 0.018 0.13 0.035]);
 
+% Draw an arbitrary straight sampling line in the SPH field axes.
+profileDrawButton = uicontrol(flowTab,'Style','pushbutton', ...
+    'String','Draw profile','Units','normalized', ...
+    'Position',[0.865 0.018 0.12 0.043], ...
+    'TooltipString','Draw a straight line on the SPH field; see Line Profile tab');
+
 parameterMenu = uicontrol( ...
     flowTab, ...
     'Style','popupmenu', ...
-    'String',cellstr(parameterLabels), ...
+    'String',cellstr([parameterLabels, "Streamlines only"]), ...
     'Value',initialVariableIndex, ...
     'BackgroundColor','w', ...
     'Units','normalized', ...
@@ -1937,6 +2042,32 @@ frameLabel = uicontrol( ...
     'HorizontalAlignment','left', ...
     'Units','normalized', ...
     'Position',[0.82 0.058 0.17 0.065]);
+
+%% =========================================================
+% INTERACTIVE FIELD PROFILE: LINE A -> B
+% ==========================================================
+profileLine = [];
+profileMovedListener = [];
+profileMovingListener = [];
+profileEndpoints = [];
+profileX = [];
+profileY = [];
+profileData = [];
+
+profileInfo = uicontrol(lineProfileTab,'Style','text', ...
+    'String','Click Draw profile in the Flow Field tab and draw a straight line on the SPH panel.', ...
+    'Units','normalized','Position',[0.06 0.90 0.88 0.065], ...
+    'HorizontalAlignment','left','BackgroundColor','w');
+profilePlotAxes = axes(lineProfileTab,'Position',[0.10 0.17 0.82 0.65]);
+profileCurve = plot(profilePlotAxes,NaN,NaN,'-','LineWidth',1.7);
+grid(profilePlotAxes,'on'); box(profilePlotAxes,'on');
+xlabel(profilePlotAxes,'Distance from A along line, s/D');
+ylabel(profilePlotAxes,nondimColorLabel(fieldColumn));
+title(profilePlotAxes,'Selected field along A-B');
+profileClearButton = uicontrol(lineProfileTab,'Style','pushbutton', ...
+    'String','Clear line','Units','normalized', ...
+    'Position',[0.79 0.925 0.13 0.045]);
+profileClearButton.Callback = @clearLineProfile;
 
 %% =========================================================
 
@@ -1991,6 +2122,7 @@ if ~hasCylinder || ~comparisonAvailable
 end
 
 saveVideoButton.Callback = @saveAnimation;
+profileDrawButton.Callback = @drawLineProfile;
 
 
 globalGroupMenu.Callback = @updateGlobalComparisonPlot;
@@ -2006,6 +2138,7 @@ streamlineToggle.Callback = @toggleStreamlines;
 parameterMenu.Callback = @parameterChanged;
     tangentialAngleEdit.Callback = @updateTangentialPlot;
 radialQuantityMenu.Callback = @updateRadialDiagnostics;
+radialAngleEdit.Callback = @updateRadialDiagnostics;
 radialRingsEdit.Callback = @updateRadialDiagnostics;
 radialRefreshButton.Callback = @updateRadialDiagnostics;
 
@@ -2249,16 +2382,22 @@ end
     %% ---------------------------------------------------------
 
     %% ---------------------------------------------------------
-    % NEW: Wall + first N fluid rings at 0 and 180 degrees
+    % General radial profile: one angle and any C++ field
     % ----------------------------------------------------------
     function updateRadialDiagnostics(~,~)
-        if ~isgraphics(axRadial0) || ~hasCylinder
-            if isgraphics(radialDiagnosticsInfo)
-                radialDiagnosticsInfo.String = ...
-                    'A cylinder boundary is required for radial profiles.';
-            end
+        if ~isgraphics(axRadialProfile) || ~hasCylinder
+            radialDiagnosticsInfo.String = ...
+                'A cylinder boundary is required for radial profiles.';
             return;
         end
+
+        targetDeg = str2double(radialAngleEdit.String);
+        if ~isfinite(targetDeg)
+            radialDiagnosticsInfo.String = ...
+                'Enter a finite angle in degrees (e.g. 45, 90, 180).';
+            return;
+        end
+        targetDeg = mod(targetDeg,360);
 
         requestedRings = str2double(radialRingsEdit.String);
         if ~isfinite(requestedRings) || requestedRings < 1 || ...
@@ -2268,6 +2407,7 @@ end
             return;
         end
         nShowRings = min(nRings,requestedRings);
+
         currentState = guidata(fig);
         if isempty(currentState)
             frame = firstFrame;
@@ -2276,65 +2416,218 @@ end
             frame = currentState.currentFrame;
             frameIndex = currentState.index;
         end
-        currentIsPressure = radialQuantityMenu.Value == 1;
-        actualAngles = zeros(1,2);
-        surfaceErrors = nan(1,2);
 
-        for radialSide = 1:2
-            targetDeg = (radialSide-1)*180;
-            fluidAngles = mod(atan2( ...
-                firstFrame(firstFluidRingRows,2)-streamCenter(2), ...
-                firstFrame(firstFluidRingRows,1)-streamCenter(1)),2*pi);
-            angleDifference = angle(exp(1i*(fluidAngles-deg2rad(targetDeg))));
-            [~,angleIndex] = min(abs(angleDifference));
-            radialRows = [boundaryRows(angleIndex); ...
-                baseSurfaceRows(angleIndex,1:nShowRings).'];
-            xRel = frame(radialRows,1)-streamCenter(1);
-            yRel = frame(radialRows,2)-streamCenter(2);
-            radii = hypot(xRel,yRel);
-            angles = atan2(yRel,xRel);
-            xND = (radii-innerRadius)/cylinderDiameter;
-            actualAngles(radialSide) = mod(rad2deg(angles(1)),360);
+        % Choose nearest actual angular ray; preserve original particle data.
+        fluidAngles = mod(atan2( ...
+            firstFrame(firstFluidRingRows,2)-streamCenter(2), ...
+            firstFrame(firstFluidRingRows,1)-streamCenter(1)),2*pi);
+        angleDifference = atan2(sin(fluidAngles-deg2rad(targetDeg)), ...
+                                cos(fluidAngles-deg2rad(targetDeg)));
+        [~,angleIndex] = min(abs(angleDifference));
+        radialRows = [boundaryRows(angleIndex); ...
+            baseSurfaceRows(angleIndex,1:nShowRings).'];
+        xRel = frame(radialRows,1)-streamCenter(1);
+        yRel = frame(radialRows,2)-streamCenter(2);
+        radii = hypot(xRel,yRel);
+        thetaLocal = atan2(yRel,xRel);
+        xND = (radii-innerRadius)/cylinderDiameter;
+        actualAngle = mod(rad2deg(thetaLocal(1)),360);
 
-            [uRef,vRef] = potentialFlowVelocity( ...
-                frame(radialRows,1),frame(radialRows,2));
-            if currentIsPressure
-                ySPH = frame(radialRows,5);
-                yExact = 0.5*referenceDensity*( ...
-                    referenceSpeed^2 - uRef.^2 - vRef.^2);
-                yLabelText = 'Pressure (Pa)';
-                variableTitle = 'Pressure';
-            else
-                ySPH = frame(radialRows,6).*cos(angles) + ...
-                    frame(radialRows,7).*sin(angles);
-                yExact = uRef.*cos(angles) + vRef.*sin(angles);
+        selectedKey = radialParameterKeys(radialQuantityMenu.Value);
+        if selectedKey == "ur" || selectedKey == "ut"
+            uSPH = frame(radialRows,6);
+            vSPH = frame(radialRows,7);
+            if selectedKey == "ur"
+                ySPH = uSPH.*cos(thetaLocal)+vSPH.*sin(thetaLocal);
                 yLabelText = 'Radial velocity u_r (m/s)';
-                variableTitle = 'Radial velocity';
+            else
+                ySPH = -uSPH.*sin(thetaLocal)+vSPH.*cos(thetaLocal);
+                yLabelText = 'Tangential velocity u_\theta (m/s)';
             end
-            surfaceErrors(radialSide) = ySPH(1)-yExact(1);
-            set(radialSPHPlots(radialSide),'XData',xND,'YData',ySPH);
-            set(radialExactPlots(radialSide),'XData',xND,'YData',yExact);
-            if isViscousTest
-                radialExactPlots(radialSide).Visible = 'off';
+            if ~isViscousTest
+                [uRef,vRef] = potentialFlowVelocity( ...
+                    frame(radialRows,1),frame(radialRows,2));
+                if selectedKey == "ur"
+                    yExact = uRef.*cos(thetaLocal)+vRef.*sin(thetaLocal);
+                else
+                    yExact = -uRef.*sin(thetaLocal)+vRef.*cos(thetaLocal);
+                end
+            else
+                yExact = nan(size(ySPH));
             end
-            ylabel(radialAxes(radialSide),yLabelText);
-            title(radialAxes(radialSide),sprintf( ...
-                '%s | %.0f deg | t = %.4f s', ...
-                variableTitle,actualAngles(radialSide),time(frameIndex)));
-            axis(radialAxes(radialSide),'tight');
-            xlim(radialAxes(radialSide), ...
-                [0,max(xND(end),eps)]);
+        else
+            fieldCol = find(cacheNames==selectedKey,1);
+            ySPH = frame(radialRows,fieldCol);
+            yLabelText = char(colorLabels(find(allowedVariables==selectedKey,1)));
+            if ~isViscousTest
+                allReferenceValues = referenceField(frame,fieldCol);
+                yExact = allReferenceValues(radialRows);
+            else
+                yExact = nan(size(ySPH));
+            end
         end
+
+        set(radialSPHPlot,'XData',xND,'YData',ySPH);
+        set(radialExactPlot,'XData',xND,'YData',yExact, ...
+            'Visible',onoffRadialReference(~isViscousTest));
+        ylabel(axRadialProfile,yLabelText);
+        xlabel(axRadialProfile,'(r-r_0)/D');
+        title(axRadialProfile,sprintf('%s | angle = %.2f deg | t = %.4f s', ...
+            char(radialParameterNames(radialQuantityMenu.Value)), ...
+            actualAngle,time(frameIndex)),'Interpreter','none');
+        axis(axRadialProfile,'tight');
+        xlim(axRadialProfile,[0 max(xND(end),eps)]);
+
         if isViscousTest
             radialDiagnosticsInfo.String = sprintf( ...
-                'Frame t = %.4f s | wall + %d rings | potential-flow reference hidden for viscous scenario', ...
-                time(frameIndex),nShowRings);
+                'Requested %.2f deg | nearest ray %.2f deg | wall + %d fluid rings | t = %.4f s', ...
+                targetDeg,actualAngle,nShowRings,time(frameIndex));
         else
             radialDiagnosticsInfo.String = sprintf( ...
-                't = %.4f s | wall + %d rings | wall SPH-exact: 0 deg = %+.5g, 180 deg = %+.5g', ...
-                time(frameIndex),nShowRings, ...
-                surfaceErrors(1),surfaceErrors(2));
+                'Requested %.2f deg | nearest ray %.2f deg | wall + %d rings | t = %.4f s | wall SPH-exact = %+.5g', ...
+                targetDeg,actualAngle,nShowRings,time(frameIndex),ySPH(1)-yExact(1));
         end
+    end
+
+    function visibility = onoffRadialReference(flag)
+        if flag
+            visibility = 'on';
+        else
+            visibility = 'off';
+        end
+    end
+
+    %% ---------------------------------------------------------
+    % User-defined straight-line profile of currently selected field
+    % ----------------------------------------------------------
+
+    function drawLineProfile(~,~)
+        stopPlayback;
+        tabGroup.SelectedTab = flowTab;
+        clearLineProfile([],[]);
+        profileInfo.String = 'Click point A and then point B on the SPH field.';
+        drawnow;
+
+        % ginput works with the existing surf/view(2) axes. drawline ROI
+        % is unreliable for this 3-D surface axes even when viewed from above.
+        oldPointer = fig.Pointer;
+        oldSurfaceHitTest = hFluid.HitTest;
+        oldBoundaryHitTest = hBoundary.HitTest;
+        hFluid.HitTest = 'off';
+        hBoundary.HitTest = 'off';
+        fig.Pointer = 'crosshair';
+        try
+            axes(ax); %#ok<LAXES> Select SPH axes for two mouse clicks.
+            [xx,yy,buttons] = ginput(2);
+            if numel(xx) ~= 2 || any(buttons ~= 1) || ...
+                    any(~isfinite([xx(:);yy(:)]))
+                profileInfo.String = 'Profile selection cancelled. Click Draw profile to try again.';
+            else
+                profileEndpoints = [xx(:), yy(:)];
+                % Use the same dimensionless XY coordinates as the field.
+                % Keep the profile line in front of the coloured surface.
+                profileLine = line(ax,profileEndpoints(:,1),profileEndpoints(:,2), ...
+                    repmat(streamlineZ,2,1),'Color',[0 0 0], ...
+                    'LineWidth',2.2,'Marker','o','MarkerSize',6, ...
+                    'MarkerFaceColor','w','HitTest','off', ...
+                    'PickableParts','none');
+                currentState = guidata(fig);
+                updateLineProfile(currentState.currentFrame);
+                tabGroup.SelectedTab = lineProfileTab;
+            end
+        catch ME
+            profileInfo.String = sprintf('Line selection failed: %s',ME.message);
+            warning('Line selection failed: %s',ME.message);
+        end
+        if isgraphics(fig)
+            fig.Pointer = oldPointer;
+        end
+        if isgraphics(hFluid), hFluid.HitTest = oldSurfaceHitTest; end
+        if isgraphics(hBoundary), hBoundary.HitTest = oldBoundaryHitTest; end
+    end
+
+    function clearLineProfile(~,~)
+        % Basic MATLAB line handles, not ROI objects, are used here.
+        if ~isempty(profileMovedListener)
+            delete(profileMovedListener);
+            profileMovedListener = [];
+        end
+        if ~isempty(profileMovingListener)
+            delete(profileMovingListener);
+            profileMovingListener = [];
+        end
+        if ~isempty(profileLine) && isgraphics(profileLine)
+            delete(profileLine);
+        end
+        profileLine = [];
+        profileEndpoints = [];
+        profileX = []; profileY = []; profileData = [];
+        set(profileCurve,'XData',NaN,'YData',NaN);
+        profileInfo.String = 'Click Draw profile in the Flow Field tab to select two points.';
+    end
+
+    function updateLineProfile(frameInput)
+        if plotVariable == "none"
+            set(profileCurve,'XData',NaN,'YData',NaN);
+            profileInfo.String = 'Select a field parameter to view the line profile.';
+            return;
+        end
+        if isempty(profileEndpoints) || size(profileEndpoints,1) ~= 2
+            return;
+        end
+        if nargin < 1 || isempty(frameInput)
+            currentState = guidata(fig);
+            if isempty(currentState) || ~isfield(currentState,'currentFrame')
+                return;
+            end
+            frameInput = currentState.currentFrame;
+        end
+        endpoints = profileEndpoints; % 2x2, in x/D and y/D
+        if size(endpoints,1) ~= 2 || any(~isfinite(endpoints(:)))
+            return;
+        end
+        seg = endpoints(2,:)-endpoints(1,:);
+        segLen = hypot(seg(1),seg(2));
+        if segLen < 1e-9
+            return;
+        end
+        alpha = linspace(0,1,lineProfileSamples)';
+        xND = endpoints(1,1)+alpha*seg(1);
+        yND = endpoints(1,2)+alpha*seg(2);
+        profileX = alpha*segLen;
+        profileY = [xND yND];
+
+        % Reconstruct on the existing SPH polar grid: theta x radial ring.
+        % This avoids arbitrary nearest-particle sampling and reproduces the
+        % interpolated field used in the coloured SPH surface.
+        values = reshape(frameInput(baseSurfaceRows(:),fieldColumn), ...
+                         nTheta,nRings);
+        values = values(angleOrder,:);
+        periodicValues = [values(end,:);values;values(1,:)];
+        interpField = griddedInterpolant({profileThetaGrid,streamRadii}, ...
+                         periodicValues,'linear','none');
+        xPhysical = nondimCenter(1) + xND*cylinderDiameter;
+        yPhysical = nondimCenter(2) + yND*cylinderDiameter;
+        qr = hypot(xPhysical-streamCenter(1), ...
+                   yPhysical-streamCenter(2));
+        qt = mod(atan2(yPhysical-streamCenter(2), ...
+                       xPhysical-streamCenter(1)),2*pi);
+        profileData = nondimField(interpField(qt,qr),fieldColumn);
+        % Cylinder interior and beyond the available physical rings stay NaN.
+        profileData(qr < streamRadii(1) | qr > streamRadii(end)) = NaN;
+        set(profileCurve,'XData',profileX,'YData',profileData);
+        ylabel(profilePlotAxes,nondimColorLabel(fieldColumn));
+        if isfield(guidata(fig),'index')
+            idx = guidata(fig).index;
+        else
+            idx = 1;
+        end
+        title(profilePlotAxes,sprintf('%s | t = %.4g s', ...
+            char(parameterLabels(fieldColumn-2)),time(idx)));
+        profileInfo.String = sprintf( ...
+            'A=(%.3f, %.3f), B=(%.3f, %.3f) [x/D,y/D] | L/D=%.3f | %d valid of %d samples', ...
+            endpoints(1,1),endpoints(1,2),endpoints(2,1),endpoints(2,2), ...
+            segLen,nnz(isfinite(profileData)),numel(profileData));
     end
 
     % Return one cached frame to CPU
@@ -2365,6 +2658,12 @@ end
 
     function toggleArrows(source,~)
         showVelocityArrows = logical(source.Value);
+        if plotVariable == "none"
+            % Keep arrows hidden in streamline-only mode.
+            hVelocity.Visible = 'off';
+            hExactVelocity.Visible = 'off';
+            return;
+        end
         if showVelocityArrows
             hVelocity.Visible = 'on';
             if ~isViscousTest
@@ -2378,6 +2677,9 @@ end
     end
 
     function toggleStreamlines(source,~)
+        if plotVariable == "none" && ~logical(source.Value)
+            source.Value = 1; % Streamline-only mode must show streamlines.
+        end
         showStreamlines = logical(source.Value);
         if showStreamlines
             % Generate only when requested, using the currently displayed frame.
@@ -2394,6 +2696,34 @@ end
 
     function showFrame(requestedIndex)
 
+        streamlinesOnly = (plotVariable == "none");
+        if streamlinesOnly
+            fieldTitle = 'Streamlines only';
+            hVelocity.Visible = 'off';
+            hExactVelocity.Visible = 'off';
+            hFluid.Visible = 'off';
+            c.Visible = 'off';
+            if ~isViscousTest
+                hExactFluid.Visible = 'off';
+                cExact.Visible = 'off';
+            end
+        else
+            fieldTitle = char(parameterLabels(fieldColumn-2));
+            if showVelocityArrows
+                hVelocity.Visible = 'on';
+                if ~isViscousTest, hExactVelocity.Visible = 'on'; end
+            else
+                hVelocity.Visible = 'off';
+                hExactVelocity.Visible = 'off';
+            end
+            hFluid.Visible = 'on';
+            c.Visible = 'on';
+            if ~isViscousTest
+                hExactFluid.Visible = 'on';
+                cExact.Visible = 'on';
+            end
+        end
+
         requestedIndex = ...
             max( ...
                 1, ...
@@ -2408,19 +2738,16 @@ end
         meshX = frame(surfaceRows(:),1);
         meshY = frame(surfaceRows(:),2);
 
-        meshC = nondimField(frame(surfaceRows(:),fieldColumn),fieldColumn);
-        meshC(~isfinite(meshC)) = NaN;
-
-        if ~isViscousTest
-            exactField = exactFieldsFixed(:,fieldColumn);
-            meshCExact = nondimField(exactField(surfaceRows(:)),fieldColumn);
-            meshCExact(~isfinite(meshCExact)) = NaN;
-        end
-
-        set(hFluid,'CData',reshape(meshC,meshSize));
-
-        if ~isViscousTest
-            set(hExactFluid,'CData',reshape(meshCExact,meshSize));
+        if ~streamlinesOnly
+            meshC = nondimField(frame(surfaceRows(:),fieldColumn),fieldColumn);
+            meshC(~isfinite(meshC)) = NaN;
+            if ~isViscousTest
+                exactField = exactFieldsFixed(:,fieldColumn);
+                meshCExact = nondimField(exactField(surfaceRows(:)),fieldColumn);
+                meshCExact(~isfinite(meshCExact)) = NaN;
+                set(hExactFluid,'CData',reshape(meshCExact,meshSize));
+            end
+            set(hFluid,'CData',reshape(meshC,meshSize));
         end
 
         %% Velocity arrow update
@@ -2485,25 +2812,25 @@ end
         if hasCylinder
             if isViscousTest
                 titleHandle.String = sprintf('No-slip SPH: %s, Re = %.0f, t = %.3f s', ...
-                    char(parameterLabels(fieldColumn-2)),reynoldsNumber,time(requestedIndex));
+                    fieldTitle,reynoldsNumber,time(requestedIndex));
                 titleExactHandle.String = sprintf('Initial uniform reference: %s', ...
-                    char(parameterLabels(fieldColumn-2)));
+                    fieldTitle);
             else
                 titleHandle.String = sprintf( ...
                     'SPH: %s, Re_D = %.0f, t = %.3f s | L_2 = %.3g', ...
-                    char(parameterLabels(fieldColumn-2)),reynoldsNumber, ...
+                    fieldTitle,reynoldsNumber, ...
                     time(requestedIndex),currentL2vel);
                 titleExactHandle.String = sprintf( ...
                     'Potential flow: %s | angle = %.1f deg', ...
-                    char(parameterLabels(fieldColumn-2)),flowAngleDeg);
+                    fieldTitle,flowAngleDeg);
             end
         else
             titleHandle.String = sprintf( ...
                 'SPH: %s, t = %.3f s | L_2 = %.3g', ...
-                char(parameterLabels(fieldColumn-2)),time(requestedIndex),currentL2vel);
+                fieldTitle,time(requestedIndex),currentL2vel);
             titleExactHandle.String = sprintf( ...
                 'Uniform analytical reference: %s', ...
-                char(parameterLabels(fieldColumn-2)));
+                fieldTitle);
         end
 
         frameSlider.Value = ...
@@ -2571,6 +2898,10 @@ end
 
             end
 
+        end
+
+        if ~isempty(profileEndpoints)
+            updateLineProfile(frame);
         end
 
         if isequal(tabGroup.SelectedTab,tangentialTab)
@@ -2803,6 +3134,16 @@ end
 
         selectedIndex = ...
             source.Value;
+
+        if selectedIndex > numel(allowedVariables)
+            % Keep the last real field column for other analysis tabs.
+            plotVariable = "none";
+            showStreamlines = true;
+            streamlineToggle.Value = 1;
+            currentState = guidata(fig);
+            showFrame(currentState.index);
+            return;
+        end
 
         plotVariable = ...
             allowedVariables(selectedIndex);
@@ -4015,6 +4356,10 @@ end
 
     function updateStreamlines(frame)
         if ~showStreamlines, return; end
+        if streamlineMethod == "streamfunction" && ~isempty(psiSolver)
+            updateStreamfunctionContours(frame);
+            return;
+        end
 
         % ---------------- SPH field from the fixed polar mesh ----------------
         U = reshape(frame(fluidRows,6),nTheta,[]);
@@ -4039,7 +4384,22 @@ end
             interiorSeedX,interiorSeedY,options);
         pBack = stream2(streamX,streamY,-gridU,-gridV, ...
             interiorSeedX,interiorSeedY,options);
-        allPaths = [pIn(:);pFwd(:);pBack(:)];
+        % A separate high-resolution local field resolves narrow fluid layers
+        % above the wall. Do not trace surface seeds on the coarse global grid.
+        pNearForward = {};
+        pNearBackward = {};
+        if ~isempty(nearSeedX)
+            localU = Fu(localQueryTheta,localQueryR);
+            localV = Fv(localQueryTheta,localQueryR);
+            localU(localStreamMask) = NaN;
+            localV(localStreamMask) = NaN;
+            localOptions = [streamStep localStreamMaxVertices];
+            pNearForward = stream2(localStreamX,localStreamY,localU,localV, ...
+                                   nearSeedX,nearSeedY,localOptions);
+            pNearBackward = stream2(localStreamX,localStreamY,-localU,-localV, ...
+                                    nearSeedX,nearSeedY,localOptions);
+        end
+        allPaths = [pIn(:);pFwd(:);pBack(:);pNearForward(:);pNearBackward(:)];
         validCount = sum(cellfun(@(q) size(q,1)>=2,allPaths));
         if validCount == 0
             % Recovery: safe annular interior seeds, well away from NaN mask.
@@ -4058,9 +4418,6 @@ end
             warning('Streamline tracing returned no paths. Check finite u/v and the interpolation mask.');
         end
         plotStreamlinesFast(ax,allPaths,false);
-        fprintf('Streamlines: %d traced paths, %d drawable XY points, %d valid grid cells\n', ...
-            validCount,nnz(isfinite(hStreamlines.XData)&isfinite(hStreamlines.YData)), ...
-            nnz(isfinite(gridU)&isfinite(gridV)));
 
         if isViscousTest, return; end
 
@@ -4074,7 +4431,19 @@ end
                 interiorSeedX,interiorSeedY,options);
             eBack = stream2(streamX,streamY,-gridUExact,-gridVExact, ...
                 interiorSeedX,interiorSeedY,options);
-            exactStreamlineXY = concatenatePaths([eIn(:);eFwd(:);eBack(:)]);
+            eNearForward = {};
+            eNearBackward = {};
+            if ~isempty(nearSeedX)
+                [localUExact,localVExact] = potentialFlowVelocity(localStreamX,localStreamY);
+                localUExact(localStreamMask) = NaN;
+                localVExact(localStreamMask) = NaN;
+                localOptions = [streamStep localStreamMaxVertices];
+                eNearForward = stream2(localStreamX,localStreamY,localUExact,localVExact, ...
+                                       nearSeedX,nearSeedY,localOptions);
+                eNearBackward = stream2(localStreamX,localStreamY,-localUExact,-localVExact, ...
+                                        nearSeedX,nearSeedY,localOptions);
+            end
+            exactStreamlineXY = concatenatePaths([eIn(:);eFwd(:);eBack(:);eNearForward(:);eNearBackward(:)]);
         end
         if ~isscalar(hExactStreamlines) || ~isgraphics(hExactStreamlines)
             hExactStreamlines = line(axExact,NaN,NaN,NaN, ...
@@ -4086,6 +4455,79 @@ end
             'ZData',streamlineZ*ones(size(exactStreamlineXY,1),1), ...
             'Visible','on');
         set(axExact,'SortMethod','childorder');
+        uistack(hExactStreamlines,'top');
+    end
+
+    function updateStreamfunctionContours(frame)
+        % Recover the divergence-free part of the CURRENT SPH velocity field
+        % using Delta(psi)=-curl(u) on the native circular polar mesh.
+        % Wall psi=0 (impermeable cylinder); outer psi is calculated from
+        % radial velocity measured at the outermost SPH fluid ring.
+        Upsi = reshape(frame(fluidRows,6),nTheta,[]);
+        Vpsi = reshape(frame(fluidRows,7),nTheta,[]);
+        Upsi = Upsi(angleOrder,:);
+        Vpsi = Vpsi(angleOrder,:);
+        if streamfunctionVorticitySource == "solver"
+            omega = reshape(frame(fluidRows,11),nTheta,[]);
+            omega = omega(angleOrder,:);
+        else
+            omega = ewcsphPolarCurl(psiSolver,Upsi,Vpsi);
+        end
+        psi = ewcsphSolvePolarPsi(psiSolver,Upsi,Vpsi,omega);
+        baseStep = streamfunctionSpacingD*referenceSpeed*cylinderDiameter;
+        if ~(isfinite(baseStep) && baseStep>0)
+            error('streamfunctionSpacingD must be positive.');
+        end
+        % Build ONE global set of fixed-psi levels. In particular, the
+        % high-detail low-|psi| contours must extend all the way through
+        % the downstream wake; do NOT crop them near the cylinder.
+        zmax=max(abs(psi(:)));
+        nBase=min(800,ceil(zmax/baseStep));
+        contourLevels=(-nBase:nBase)*baseStep;
+        if streamfunctionNearWallContours
+            nearLevels=referenceSpeed*cylinderDiameter* ...
+                [-fliplr(streamfunctionNearWallLevelsD), ...
+                 streamfunctionNearWallLevelsD];
+            contourLevels=sort(unique([contourLevels nearLevels]));
+        end
+        [xPsi,yPsi] = ewcsphPsiContourXY(psiSolver,psi,NaN, ...
+            struct('levels',contourLevels,'maxRadius',Inf));
+        if ~isscalar(hStreamlines) || ~isgraphics(hStreamlines)
+            hStreamlines = line(ax,NaN,NaN,NaN, ...
+                'Color',[0.08 0.08 0.08], 'LineWidth',0.75, ...
+                'HitTest','off','PickableParts','none');
+        end
+        set(hStreamlines, ...
+            'XData',(xPsi+streamCenter(1)-nondimCenter(1))/cylinderDiameter, ...
+            'YData',(yPsi+streamCenter(2)-nondimCenter(2))/cylinderDiameter, ...
+            'ZData',streamlineZ*ones(size(xPsi)), 'Visible','on');
+        % Coordinates xPsi,yPsi are relative to cylinder centre.
+        uistack(hStreamlines,'top');
+
+        if isViscousTest, return; end
+        % Exact comparison: actual potential-flow streamfunction, not a
+        % projected approximation of the SPH data.
+        if isempty(exactStreamlineXY)
+            [Rgrid,Thgrid] = meshgrid(psiSolver.r,psiSolver.theta);
+            psiAnalytic = referenceSpeed*(Rgrid-psiSolver.r(1)^2./Rgrid) ...
+                .*sin(Thgrid-deg2rad(flowAngleDeg));
+            psiAnalytic(:,1) = 0;
+            % Use identical global levels in the analytical comparison.
+            % Their contours stay continuous outside the cylinder as well.
+            [xe,ye] = ewcsphPsiContourXY(psiSolver,psiAnalytic,NaN, ...
+                struct('levels',contourLevels,'maxRadius',Inf));
+            exactStreamlineXY = [xe ye];
+        end
+        if ~isscalar(hExactStreamlines) || ~isgraphics(hExactStreamlines)
+            hExactStreamlines = line(axExact,NaN,NaN,NaN, ...
+                'Color',[0.08 0.08 0.08], 'LineWidth',0.75, ...
+                'HitTest','off','PickableParts','none');
+        end
+        set(hExactStreamlines, ...
+            'XData',(exactStreamlineXY(:,1)+streamCenter(1)-nondimCenter(1))/cylinderDiameter, ...
+            'YData',(exactStreamlineXY(:,2)+streamCenter(2)-nondimCenter(2))/cylinderDiameter, ...
+            'ZData',streamlineZ*ones(size(exactStreamlineXY,1),1), ...
+            'Visible','on');
         uistack(hExactStreamlines,'top');
     end
 
@@ -4380,4 +4822,141 @@ end
 
     end
 
+end
+
+
+function S = ewcsphCreatePolarPsiSolver(theta,wallRadius,fluidRadii)
+% Sparse-free spectral polar Poisson solver: FFT in theta, tridiagonal
+% finite-volume operator in r. Factorisation is precomputed ONCE.
+    theta=theta(:);
+    r=[wallRadius;fluidRadii(:)];
+    nt=numel(theta); nr=numel(r);
+    if nt<4 || nr<3 || any(diff(r)<=0)
+        error('Invalid polar ring geometry for streamfunction reconstruction.');
+    end
+    dtheta=2*pi/nt;
+    if max(abs(diff([theta;theta(1)+2*pi])-dtheta))>0.05*dtheta
+        error('Streamfunction reconstruction requires near-uniform angular spacing.');
+    end
+    i=2:nr-1;
+    rm=r(i-1); ri=r(i); rp=r(i+1);
+    drCell=0.5*(rp-rm);
+    a=(0.5*(ri+rm))./(ri.*drCell.*(ri-rm));
+    c=(0.5*(ri+rp))./(ri.*drCell.*(rp-ri));
+    % Eigenvalues of the second-order periodic angular Laplacian.
+    modes=(0:nt-1)';
+    angularEigenvalue=4*sin(pi*modes/nt).^2/dtheta^2;
+    diagCoeffs=-(a'+c')-angularEigenvalue*(1./ri'.^2);
+    nw=numel(i);
+    invPiv=zeros(nt,nw);
+    upper=zeros(nt,nw);
+    invPiv(:,1)=1./diagCoeffs(:,1);
+    if nw>1
+        upper(:,1)=c(1)*invPiv(:,1);
+    end
+    for k=2:nw
+        invPiv(:,k)=1./(diagCoeffs(:,k)-a(k)*upper(:,k-1));
+        if k<nw,upper(:,k)=c(k)*invPiv(:,k);end
+    end
+    % Signed Fourier indices for reconstructing psi at the outer boundary.
+    freq=(0:nt-1)';
+    freq(freq>floor(nt/2))=freq(freq>floor(nt/2))-nt;
+    S=struct('theta',theta,'r',r,'nt',nt,'nr',nr, ...
+             'a',a,'c',c,'invPiv',invPiv,'upper',upper, ...
+             'frequency',freq,'dtheta',dtheta);
+end
+
+function omega=ewcsphPolarCurl(S,U,V)
+% curl_z = (1/r)*d(r*u_theta)/dr - (1/r)*du_r/dtheta
+% Reconstructs vorticity from the actual particle velocity data.
+    theta=S.theta; rr=S.r(2:end)';
+    ct=cos(theta);st=sin(theta);
+    ur=U.*ct+V.*st;
+    ut=-U.*st+V.*ct;
+    A=ut.*rr;
+    dA=zeros(size(A));
+    dA(:,1)=(A(:,2)-A(:,1))/(rr(2)-rr(1));
+    dA(:,end)=(A(:,end)-A(:,end-1))/(rr(end)-rr(end-1));
+    for j=2:numel(rr)-1
+        hm=rr(j)-rr(j-1); hp=rr(j+1)-rr(j);
+        dA(:,j)=(-hp/(hm*(hm+hp)))*A(:,j-1) ...
+             +((hp-hm)/(hm*hp))*A(:,j) ...
+             +(hm/(hp*(hm+hp)))*A(:,j+1);
+    end
+    dUrTheta=(circshift(ur,-1,1)-circshift(ur,1,1))/(2*S.dtheta);
+    omega=(dA-dUrTheta)./rr;
+end
+
+function psi=ewcsphSolvePolarPsi(S,U,V,omega)
+% Delta psi=-omega; psi=0 on cylinder; outer Dirichlet psi derived from
+% SPH radial velocity, not imposed from a potential-flow model.
+    ct=cos(S.theta);st=sin(S.theta);
+    urOuter=U(:,end).*ct+V(:,end).*st;
+    urOuter=urOuter-mean(urOuter,'omitnan');
+    if any(~isfinite(urOuter(:))) || any(~isfinite(omega(:)))
+        error('Non-finite SPH velocities/vorticity cannot reconstruct psi.');
+    end
+    freq=S.frequency;
+    fluxHat=fft(S.r(end)*urOuter);
+    psiOuterHat=zeros(S.nt,1);
+    nonzero=freq~=0;
+    if rem(S.nt,2)==0
+        nonzero(S.nt/2+1)=false; % Nyquist derivative is ambiguous
+    end
+    psiOuterHat(nonzero)=fluxHat(nonzero)./(1i*freq(nonzero));
+    psiOuter=real(ifft(psiOuterHat));
+
+    rhsHat=fft(-omega(:,1:end-1),[],1);
+    rhsHat(:,end)=rhsHat(:,end)-S.c(end)*fft(psiOuter);
+    nw=size(rhsHat,2);
+    dp=zeros(size(rhsHat));
+    dp(:,1)=rhsHat(:,1).*S.invPiv(:,1);
+    for j=2:nw
+        dp(:,j)=(rhsHat(:,j)-S.a(j)*dp(:,j-1)).*S.invPiv(:,j);
+    end
+    sol=zeros(size(rhsHat));
+    sol(:,end)=dp(:,end);
+    for j=nw-1:-1:1
+        sol(:,j)=dp(:,j)-S.upper(:,j).*sol(:,j+1);
+    end
+    psiHat=[zeros(S.nt,1),sol,fft(psiOuter)];
+    psi=real(ifft(psiHat,[],1));
+end
+
+function [xx,yy]=ewcsphPsiContourXY(S,psi,baseStep,extra)
+% Generate contours in (r,theta), then map to Cartesian, preserving
+% the original polar mesh's near-wall resolution and the cylinder mask.
+    radial=S.r(:)';
+    if ~isempty(extra)
+        radialKeep=radial<=extra.maxRadius;
+        if nnz(radialKeep)<2
+            xx=NaN;yy=NaN;return;
+        end
+        radial=radial(radialKeep);
+        psi=psi(:,radialKeep);
+        levels=sort(unique(extra.levels(:)'));
+    else
+        zmax=max(abs(psi(:)));
+        nLevel=min(800,ceil(zmax/baseStep));
+        levels=(-nLevel:nLevel)*baseStep;
+    end
+    if numel(levels)<1,xx=NaN;yy=NaN;return;end
+    thetaExt=[S.theta; S.theta(1)+2*pi];
+    psiExt=[psi;psi(1,:)];
+    C=contourc(radial,thetaExt,psiExt,levels);
+    nCols=size(C,2);
+    xx=NaN(nCols+1,1);yy=NaN(nCols+1,1);
+    k=1;pos=1;
+    while k<=nCols
+        n=round(C(2,k));
+        if ~isfinite(n) || n<1 || k+n>nCols,break;end
+        rSeg=C(1,k+1:k+n);
+        tSeg=C(2,k+1:k+n);
+        xx(pos:pos+n-1)=rSeg(:).*cos(tSeg(:));
+        yy(pos:pos+n-1)=rSeg(:).*sin(tSeg(:));
+        pos=pos+n+1;
+        k=k+n+1;
+    end
+    xx=xx(1:pos-1);yy=yy(1:pos-1);
+    if isempty(xx),xx=NaN;yy=NaN;end
 end
