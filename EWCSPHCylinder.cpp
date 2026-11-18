@@ -25,7 +25,7 @@ const double dtMax = 0.001;
 const double dtMin = 1.0e-8;
 const double CFL = 0.3;
 const double OutputTimeInterval = 0.1;  
-const double Totaltime = 30.0 + OutputTimeInterval;
+const double Totaltime = 20 + OutputTimeInterval;
 
 
 // ------------------------------------------------------------
@@ -55,15 +55,15 @@ const double inletVelocityX =
 const double inletVelocityY =
     inletVelocity*sin(flowAngle);
 
-const double c0 = 2.0; //.0*inletVelocity;
+const double c0 = 20.0*inletVelocity;
 
-const double gammaEOS = 7.0; 
+const double gammaEOS = 1.0; // morris EOS = 1.0, Tait EOS = 7.0
 const double B = c0*c0*rho0/gammaEOS;
 const double Re = 100.0;  // Reynolds number
 
 const double Dcylinder = 0.1;
-const double r0 = 0.5*Dcylinder;
-const double R = 20*Dcylinder;
+const double r0 = 0.5*Dcylinder; 
+const double R = 10*Dcylinder;
 
 const double viscosity = inletVelocity*Dcylinder/Re;
 const double viscdr0 = 1.0e-5;
@@ -79,7 +79,7 @@ const double deltadifussion = 0.0;
 
 
 const int NsupportLayers = 4;
-const int Nr = 238;
+const int Nr = 100;
 const int Nbuffer = 6;      // open-boundary buffer rings
 int NrTotal = Nr + Nbuffer;
 
@@ -103,6 +103,8 @@ const string testScenario =
 
 const bool PressureTest = false; // true = alternating pressure test, false = normal simulation
 
+const string outerBoundaryCondition = "zero-gradient";
+// Options: "riemann", "zero-gradient"
 
 string kernel; 
 string type; 
@@ -1443,6 +1445,15 @@ void applyRiemannBufferBoundary(
                     v[interface];
             }
 
+            // Far field
+            double unFar =
+                inletVelocityX*nx
+                + inletVelocityY*ny;
+
+            double utFar =
+                inletVelocityX*tx
+                + inletVelocityY*ty;
+
             // Interior physical state
             double unInterior =
                 uInt*nx + vInt*ny;
@@ -1450,7 +1461,7 @@ void applyRiemannBufferBoundary(
             double utInterior =
                 uInt*tx + vInt*ty;
 
-            double cInterior =
+            /*double cInterior =
                 c0*pow(
                     rhoInt/rho0,
                     0.5*(gammaEOS-1.0));
@@ -1460,15 +1471,7 @@ void applyRiemannBufferBoundary(
                 unInterior
                 + 2.0*cInterior/
                   (gammaEOS-1.0);
-
-            // Far field
-            double unFar =
-                inletVelocityX*nx
-                + inletVelocityY*ny;
-
-            double utFar =
-                inletVelocityX*tx
-                + inletVelocityY*ty;
+            
 
             double Jminus =
                 unFar
@@ -1484,18 +1487,71 @@ void applyRiemannBufferBoundary(
                 *(Jplus-Jminus);
 
             cBuffer =
-                max(cBuffer,1.0e-8);
+                max(cBuffer,1.0e-8);*/
 
             
-            for (int ir = Nr + 1; ir <= NrTotal; ++ir)
+            double unBuffer;
+            double rhoBuffer;
+
+            if (gammaEOS == 1.0)
+            {
+                // =================================================
+                // Morris linear EOS: constant sound speed
+                // =================================================
+
+                const double rhoSafe = max(rhoInt, 1.0e-6*rho0);
+
+                const double Jplus =
+                    unInterior + c0*log(rhoSafe/rho0);
+
+                // Far-field density is rho0
+                const double Jminus = unFar;
+
+                unBuffer = 0.5*(Jplus + Jminus);
+
+                rhoBuffer =
+                    rho0*exp((Jplus-Jminus)/(2.0*c0));
+            }
+            else
+            {
+                // =================================================
+                // Nonlinear Tait EOS
+                // =================================================
+
+                const double cInterior =
+                    c0*pow(
+                        rhoInt/rho0,
+                        0.5*(gammaEOS-1.0));
+
+                const double Jplus =
+                    unInterior
+                    +2.0*cInterior/(gammaEOS-1.0);
+
+                const double Jminus =
+                    unFar
+                    -2.0*c0/(gammaEOS-1.0);
+
+                unBuffer = 0.5*(Jplus + Jminus);
+
+                const double cBuffer =
+                    max(
+                        0.25*(gammaEOS-1.0)*(Jplus-Jminus),
+                        1.0e-8);
+
+                rhoBuffer =
+                    rho0*pow(
+                        cBuffer/c0,
+                        2.0/(gammaEOS-1.0));
+            }
+
+
+            
+            /*for (int ir = Nr + 1; ir <= NrTotal; ++ir)
             {
                 // Buffer particle
                 int i = Nboundary + (ir-1)*NTheta + k;
                 
-                rho[i] =
-                    rho0*pow(
-                        cBuffer/c0,
-                        2.0/(gammaEOS-1.0));
+                rho[i] = rhoBuffer;
 
                 double utBuffer;
 
@@ -1518,7 +1574,55 @@ void applyRiemannBufferBoundary(
                 v[i] =
                     unBuffer*ny
                     + utBuffer*ty;
+            }*/
+
+
+            for (int ir = Nr + 1; ir <= NrTotal; ++ir)
+            {
+                const int i = Nboundary + (ir-1)*NTheta + k;
+
+                if (outerBoundaryCondition == "zero-gradient")
+                {
+                    if (unFar < 0.0)
+                    {
+                        // Inflow: retain Riemann reconstruction
+                        rho[i] = rhoBuffer;
+
+                        u[i] = unBuffer*nx + utFar*tx;
+                        v[i] = unBuffer*ny + utFar*ty;
+                    }
+                    else
+                    {
+                        // Outflow: zero-gradient extrapolation
+                        rho[i] = rhoInt;
+                        u[i]   = uInt;
+                        v[i]   = vInt;
+                    }
+                }
+                else
+                {
+                    // Original Riemann boundary
+                    rho[i] = rhoBuffer;
+
+                    double utBuffer;
+
+                    if (unFar < 0.0)
+                    {
+                        utBuffer = utFar;
+                    }
+                    else
+                    {
+                        utBuffer = utInterior;
+                    }
+
+                    u[i] =
+                        unBuffer*nx + utBuffer*tx;
+
+                    v[i] =
+                        unBuffer*ny + utBuffer*ty;
+                }
             }
+
     }
 }
 
@@ -2675,6 +2779,9 @@ int main()
             double rp =
                 Bpolar*(pow(qA,ir)-1.0)
                 + r0;
+
+            //double rp =
+                //r0 + ir*(R-r0)/Nr;
 
             for (int k = 0; k < NTheta; ++k)
             {
