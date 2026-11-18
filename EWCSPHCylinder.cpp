@@ -25,7 +25,7 @@ const double dtMax = 0.001;
 const double dtMin = 1.0e-8;
 const double CFL = 0.3;
 const double OutputTimeInterval = 0.1;  
-const double Totaltime = 100.0 + OutputTimeInterval;
+const double Totaltime = 30.0 + OutputTimeInterval;
 
 
 // ------------------------------------------------------------
@@ -55,7 +55,7 @@ const double inletVelocityX =
 const double inletVelocityY =
     inletVelocity*sin(flowAngle);
 
-const double c0 = 20.0*inletVelocity;
+const double c0 = 2.0; //.0*inletVelocity;
 
 const double gammaEOS = 7.0; 
 const double B = c0*c0*rho0/gammaEOS;
@@ -63,7 +63,7 @@ const double Re = 100.0;  // Reynolds number
 
 const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder;
-const double R = 10*Dcylinder;
+const double R = 20*Dcylinder;
 
 const double viscosity = inletVelocity*Dcylinder/Re;
 const double viscdr0 = 1.0e-5;
@@ -79,7 +79,7 @@ const double deltadifussion = 0.0;
 
 
 const int NsupportLayers = 4;
-const int Nr = 100;
+const int Nr = 238;
 const int Nbuffer = 6;      // open-boundary buffer rings
 int NrTotal = Nr + Nbuffer;
 
@@ -100,6 +100,8 @@ const bool useNoSlip =
 
 const string testScenario =
     useNoSlip ? "viscous" : "potential";
+
+const bool PressureTest = false; // true = alternating pressure test, false = normal simulation
 
 
 string kernel; 
@@ -405,6 +407,9 @@ double calculateDt(int Nboundary,
 
 
 
+
+
+
 // --------------------------------------------------
 // Cached particle geometry
 // --------------------------------------------------
@@ -523,6 +528,198 @@ CachedPairs makePairCache(
 
     return cache;
 }
+
+
+// --------------------------------------------------
+// Pressure response to alternating pressure field
+// --------------------------------------------------
+void testAlternatingPressureAcceleration(
+    int Nboundary,
+    int NfluidEnd,
+    int NTheta,
+    int Nr,
+    const vector<double>& r,
+    const vector<double>& Vi,
+    const vector<double>& hp,
+    const CachedPairs& pairCache)
+{
+    // ====================================================
+    // 1. Diagnostic parameters
+    // ====================================================
+
+    const double p0 = 5.0;   // Uniform background pressure
+    const double A  = 1.0;   // Alternating pressure amplitude
+
+    const double rhoTest =
+        rho0*pow(1.0 + p0/B, 1.0/gammaEOS);
+
+    // No simulation state is modified.
+
+    ofstream file("AlternatingPressureResidual.csv");
+
+    file << setprecision(16);
+
+    file << "ring,theta_deg,rD,h,"
+            "pUniform,pAlternating,"
+            "axUniform,axAlternating,"
+            "axResponse,ayResponse,"
+            "responseMagnitude\n";
+
+    double maxResponse = 0.0;
+    double sumResponse2 = 0.0;
+    int count = 0;
+
+    // ====================================================
+    // 2. Prescribed alternating pressure field
+    // ====================================================
+
+    auto alternatingPressure = [&](int j)
+    {
+        // Cylinder support particles:
+        // maintain uniform background pressure.
+        if (j < Nboundary)
+            return p0;
+
+        // Works for both fluid and buffer rings.
+        int ring = (j - Nboundary)/NTheta;
+
+        return p0 + ((ring % 2 == 0) ? A : -A);
+    };
+
+    // ====================================================
+    // 3. Loop over all physical fluid particles
+    // ====================================================
+
+    for (int ir = 0; ir < Nr; ++ir)
+    {
+        for (int k = 0; k < NTheta; ++k)
+        {
+            const int i =
+                Nboundary + ir*NTheta + k;
+
+            if (i >= NfluidEnd)
+                continue;
+
+            double axUniform = 0.0;
+            double ayUniform = 0.0;
+
+            double axAlternating = 0.0;
+            double ayAlternating = 0.0;
+
+            const double piAlternating =
+                alternatingPressure(i);
+
+            // ====================================================
+            // 4. Evaluate existing SPH pressure operator
+            // ====================================================
+
+            for (const CachedPair& p : pairCache[i])
+            {
+                const int j = p.j;
+                const double Vj = Vi[j];
+
+                const double pjAlternating =
+                    alternatingPressure(j);
+
+                // Uniform-pressure case
+                const double uniformTerm =
+                    p0/(rhoTest*rhoTest);
+
+                axUniform -= Vj*rhoTest*
+                    (uniformTerm*p.gradXj
+                    -uniformTerm*p.gradXi);
+
+                ayUniform -= Vj*rhoTest*
+                    (uniformTerm*p.gradYj
+                    -uniformTerm*p.gradYi);
+
+                // Alternating-pressure case
+                const double termI =
+                    piAlternating/(rhoTest*rhoTest);
+
+                const double termJ =
+                    pjAlternating/(rhoTest*rhoTest);
+
+                axAlternating -= Vj*rhoTest*
+                    (termI*p.gradXj
+                    -termJ*p.gradXi);
+
+                ayAlternating -= Vj*rhoTest*
+                    (termI*p.gradYj
+                    -termJ*p.gradYi);
+            }
+
+            // ====================================================
+            // 5. Isolate acceleration caused by alternating mode
+            // ====================================================
+
+            const double axResponse =
+                axAlternating - axUniform;
+
+            const double ayResponse =
+                ayAlternating - ayUniform;
+
+            const double responseMagnitude =
+                sqrt(axResponse*axResponse
+                    +ayResponse*ayResponse);
+
+            maxResponse =
+                max(maxResponse,responseMagnitude);
+
+            sumResponse2 +=
+                responseMagnitude*responseMagnitude;
+
+            ++count;
+
+            // ====================================================
+            // 6. Save results
+            // ====================================================
+
+            file << ir + 1 << ","
+                 << k*360.0/NTheta << ","
+                 << (r[i]-r0)/Dcylinder << ","
+                 << hp[i] << ","
+                 << p0 << ","
+                 << piAlternating << ","
+                 << axUniform << ","
+                 << axAlternating << ","
+                 << axResponse << ","
+                 << ayResponse << ","
+                 << responseMagnitude << "\n";
+        }
+    }
+
+    file.close();
+
+    const double rmsResponse =
+        sqrt(sumResponse2/max(count,1));
+
+    // ====================================================
+    // 7. Summary
+    // ====================================================
+
+    cout << "\n====================================\n";
+    cout << "ALTERNATING PRESSURE TEST\n";
+    cout << "====================================\n";
+
+    cout << "Background pressure = "
+         << p0 << " Pa\n";
+
+    cout << "Alternating amplitude = "
+         << A << " Pa\n";
+
+    cout << "Density = "
+         << rhoTest << " kg/m3\n";
+
+    cout << "Maximum acceleration response = "
+         << maxResponse << " m/s2\n";
+
+    cout << "RMS acceleration response = "
+         << rmsResponse << " m/s2\n";
+
+    cout << "Saved: AlternatingPressureResidual.csv\n";
+}
+
 
 
 // --------------------------------------------------
@@ -2470,10 +2667,10 @@ int main()
         int Nboundary = i;
 
         // ============================================================
-        // 3. Fluid + outer buffer rings
+        // 3. Fluid 
         // ============================================================
 
-        for (int ir = 1; ir <= NrTotal; ++ir)
+        for (int ir = 1; ir <= NrTotal; ++ir) //change ir <= NrTotal for expanding buffer particle and disable (4)
         {
             double rp =
                 Bpolar*(pow(qA,ir)-1.0)
@@ -2508,6 +2705,52 @@ int main()
                 i++;
             }
         }
+
+
+        /*// ============================================================
+        // 4. Outer buffer rings
+        // ============================================================
+        const double rInterface = Bpolar*(pow(qA,Nr)-1.0) + r0;
+
+        for (int ir = Nr + 1; ir <= NrTotal; ++ir) //this is for mirrored outer buffer particles
+        {
+            //Mirror the corresponding inner fluid ring
+            const int irmirror = 2*Nr - ir;
+            const double rmirror = Bpolar*(pow(qA,irmirror)-1.0) + r0;
+
+            double rp = 2 * rInterface - rmirror; //mirrored position
+
+            for (int k = 0; k < NTheta; ++k)
+            {
+                double thetap =
+                    k*dTheta0;
+
+                double xp =
+                    rp*cos(thetap);
+
+                double yp =
+                    rp*sin(thetap);
+
+                r.push_back(rp);
+                theta.push_back(thetap);
+
+                x.push_back(xp);
+                y.push_back(yp);
+
+                /*cout << "ID: " << i
+                    << "  Type: "
+                    << ((ir <= Nr) ? "Fluid" : "Buffer")
+                    << "  r: " << rp
+                    << "  theta: " << thetap
+                    << "  x: " << xp
+                    << "  y: " << yp
+                    << endl;
+
+                i++;
+            }
+        }*/
+
+        
 
 
         // ============================================================
@@ -2968,6 +3211,32 @@ int main()
         // Precalculate all geometry-dependent coefficients once.
         const CachedPairs pairCache = makePairCache(
             neighbours, x, y, hp, Nboundary, NfluidEnd, kernel);
+
+        
+        // ====================================================
+        // STANDALONE CONSTANT-PRESSURE TEST
+        // ====================================================
+
+        
+        if (PressureTest)
+        {
+           testAlternatingPressureAcceleration(
+            Nboundary,
+            NfluidEnd,
+            NTheta,
+            Nr,
+            r,
+            Vi,
+            hp,
+            pairCache
+            );
+
+            cout << "Constant-pressure test completed.\n";
+
+            return 0;
+        }
+
+
 
 
 // ----------------------------------------------

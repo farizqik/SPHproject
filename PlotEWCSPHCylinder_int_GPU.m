@@ -1,4 +1,4 @@
-function EWCSPH_MATLAB_continuous_streamfunction_contours(simulationFolder,testScenario)
+function EWCSPH_MATLAB_continuous_streamfunction_folder_panel(simulationFolder,testScenario)
 
 %% =========================================================
 % DATASET SELECTION
@@ -922,6 +922,12 @@ fig = figure( ...
     'Position',[80 80 1250 700], ...
     'Name',windowTitle, ...
     'NumberTitle','off');
+
+% Separate hideable folder information window (excluded from plot exports).
+folderInfoFig = gobjects(1);
+folderMenu = uimenu(fig,'Label','Folder');
+uimenu(folderMenu,'Label','Show full folder name / path', ...
+    'Callback',@showFolderInfo);
 
 %% Tabs
 
@@ -1949,6 +1955,12 @@ comparisonButton = uicontrol( ...
     'Units','normalized', ...
     'Position',[0.395 0.065 0.085 0.055], ...
     'TooltipString','Open the updated local SPH-versus-potential-flow comparison tab');
+
+folderInfoButton = uicontrol(flowTab,'Style','pushbutton', ...
+    'String','Folder','Units','normalized', ...
+    'Position',[0.008 0.015 0.057 0.043], ...
+    'TooltipString','Show or hide the full simulation folder name and path', ...
+    'Callback',@toggleFolderInfo);
 
 historyButton = uicontrol( ...
     flowTab, ...
@@ -4804,11 +4816,76 @@ end
 
     %% ---------------------------------------------------------
 
+    % ----------------------------------------------------------
+    % Full simulation folder information (separate hideable panel)
+    % ----------------------------------------------------------
+    function toggleFolderInfo(~,~)
+        if isgraphics(folderInfoFig)
+            if strcmp(folderInfoFig.Visible,'on')
+                folderInfoFig.Visible='off';
+            else
+                folderInfoFig.Visible='on';
+                figure(folderInfoFig);
+            end
+        else
+            showFolderInfo();
+        end
+    end
+
+    function showFolderInfo(~,~)
+        if isgraphics(folderInfoFig)
+            folderInfoFig.Visible='on';
+            figure(folderInfoFig);
+            return;
+        end
+        [~,fullFolderName]=fileparts(char(simulationFolder));
+        if isempty(fullFolderName),fullFolderName=char(simulationFolder);end
+        mainPos=get(fig,'Position');
+        left=max(20,mainPos(1)+20);
+        bottom=max(30,mainPos(2)+mainPos(4)-230);
+        folderInfoFig=figure('Name','EWCSPH | Full simulation folder', ...
+            'NumberTitle','off','MenuBar','none','ToolBar','none', ...
+            'Color',[0.98 0.98 0.98], ...
+            'Units','pixels','Position',[left bottom 760 185], ...
+            'Resize','on', 'CloseRequestFcn',@hideFolderInfo);
+        uicontrol(folderInfoFig,'Style','text','Units','normalized', ...
+            'Position',[0.03 0.70 0.94 0.13], ...
+            'String',['Folder name: ' fullFolderName], ...
+            'HorizontalAlignment','left','BackgroundColor',[0.98 0.98 0.98], ...
+            'FontWeight','bold','TooltipString',fullFolderName);
+        uicontrol(folderInfoFig,'Style','text','Units','normalized', ...
+            'Position',[0.03 0.57 0.94 0.10], ...
+            'String','Full simulation folder path (click to select text):', ...
+            'HorizontalAlignment','left','BackgroundColor',[0.98 0.98 0.98]);
+        % Editable text field shows the complete path and supports text selection.
+        uicontrol(folderInfoFig,'Style','edit','Units','normalized', ...
+            'Position',[0.03 0.32 0.94 0.22], ...
+            'String',char(simulationFolder), ...
+            'HorizontalAlignment','left', 'BackgroundColor','w', ...
+            'TooltipString',char(simulationFolder));
+        uicontrol(folderInfoFig,'Style','pushbutton','Units','normalized', ...
+            'Position',[0.68 0.07 0.14 0.19], 'String','Copy path', ...
+            'Callback',@(~,~)clipboard('copy',char(simulationFolder)));
+        uicontrol(folderInfoFig,'Style','pushbutton','Units','normalized', ...
+            'Position',[0.83 0.07 0.14 0.19], 'String','Hide', ...
+            'Callback',@hideFolderInfo);
+    end
+
+    function hideFolderInfo(~,~)
+        if isgraphics(folderInfoFig)
+            folderInfoFig.Visible='off';
+        end
+    end
+
     % Clean close
 
     % ----------------------------------------------------------
 
     function closeViewer(~,~)
+
+        if isgraphics(folderInfoFig)
+            delete(folderInfoFig);
+        end
 
         stopPlayback;
 

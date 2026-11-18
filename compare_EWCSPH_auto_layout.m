@@ -27,7 +27,7 @@ streamMaxVertices = 1500;
 % "streamfunction" uses YOUR EWCSPH velocity snapshots, reconstructing
 % psi via a polar Poisson solution; "particle" retains original stream2.
 streamlineMethod = "streamfunction"; % "streamfunction" | "particle"
-streamfunctionSpacingD = 0.015;  % Delta psi/(U_inf*D); smaller = denser, GLOBAL
+streamfunctionSpacingD = 0.06;  % Delta psi/(U_inf*D); smaller = denser, GLOBAL
 streamfunctionNearWallContours = true;
 % Additional low-|psi| levels apply THROUGHOUT the domain, including wake.
 streamfunctionNearWallLevelsD = [0.0005 0.001 0.002 0.004 0.008 0.015 0.03 0.05];
