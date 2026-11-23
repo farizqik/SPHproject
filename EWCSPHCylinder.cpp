@@ -23,7 +23,7 @@ using namespace std;
 
 const double dtMax = 0.001;
 const double dtMin = 1.0e-8;
-const double CFL = 0.3;
+const double CFL = 0.15;
 const double OutputTimeInterval = 0.1;  
 const double Totaltime = 20 + OutputTimeInterval;
 
@@ -57,9 +57,9 @@ const double inletVelocityY =
 
 const double c0 = 20.0*inletVelocity;
 
-const double gammaEOS = 1.0; // morris EOS = 1.0, Tait EOS = 7.0
+const double gammaEOS = 7.0; // morris EOS = 1.0, Tait EOS = 7.0
 const double B = c0*c0*rho0/gammaEOS;
-const double Re = 100.0;  // Reynolds number
+const double Re = 1000.0;  // Reynolds number
 
 const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder; 
@@ -93,7 +93,7 @@ vector<double> hlist = {2.0};
 // "no-slip"   = impulsively started viscous cylinder
 // "free-slip" = potential-flow benchmark
 
-const string boundaryCondition = "no-slip";
+const string boundaryCondition = "free-slip";
 
 const bool useNoSlip =
     (boundaryCondition == "no-slip");
