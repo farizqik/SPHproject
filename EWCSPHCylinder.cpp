@@ -87,7 +87,19 @@ int NrTotal = Nr + Nbuffer;
 int NTheta =  180;
 double dTheta0 = 2*PI/NTheta;
 
-vector<double> hlist = {2.0};
+//vector<double> hlist = {2.0};
+vector<double> hlist = {
+    1.0, 1.2, 1.4, 1.6, 1.8,
+    2.0, 2.2, 2.4, 2.6, 2.8,
+    3.0, 3.2, 3.4, 3.6, 3.8,
+    4.0, 4.2, 4.4, 4.6, 4.8,
+    5.0, 5.2, 5.4, 5.6, 5.8,
+    6.0, 6.2, 6.4, 6.6, 6.8,
+    7.0, 7.2, 7.4, 7.6, 7.8,
+    8.0, 8.2, 8.4, 8.6, 8.8,
+    9.0, 9.2, 9.4, 9.6, 9.8,
+    10.0
+};
 
 
 // "no-slip"   = impulsively started viscous cylinder
@@ -101,10 +113,10 @@ const bool useNoSlip =
 const string testScenario =
     useNoSlip ? "viscous" : "potential";
 
-const bool PressureTest = false; // true = alternating pressure test, false = normal simulation
-
 const string outerBoundaryCondition = "zero-gradient";
 // Options: "riemann", "zero-gradient"
+
+const bool SmoothingLengthTest = true;
 
 string kernel; 
 string type; 
@@ -434,6 +446,333 @@ struct CachedPair
 
 using CachedPairs = vector<vector<CachedPair>>;
 
+// --------------------------------------------------
+// Smoothing length L2 error test
+// --------------------------------------------------
+/*void runSmoothingLengthL2Test(
+    const vector<double>& x,
+    const vector<double>& y,
+    const vector<double>& Vi,
+    const vector<double>& hp,
+    const CachedPairs& pairCache,
+    int Nboundary,
+    int NfluidEnd,
+    double Dcylinder,
+    double coefh,
+    const string& kernel,
+    const string& foldername)
+{
+    ofstream summary("SmoothingLengthL2.csv", ios::app);
+    ofstream local(foldername + "/SmoothingLengthLocalError.csv");
+
+    if (!summary || !local)
+    {
+        throw runtime_error("Cannot write smoothing length CSV");
+    }
+
+    summary << setprecision(16);
+    local << setprecision(16);
+
+    local << "field,lambda_over_D,i,x,y,h,h_over_lambda,delta_over_h,"
+             "exactGx,exactGy,differenceGx,differenceGy,differenceError\n";
+
+    // ====================================================
+    // 1. Analytical test functions
+    // ====================================================
+
+    const char* fieldNames[] = {"sine_x", "sine_y", "sine_xy"};
+    const double lambdaFactors[] = {1.0, 2.0};
+
+    for (double lambdaFactor : lambdaFactors)
+    {
+        const double lambda = lambdaFactor*Dcylinder;
+        const double k = 2.0*PI/lambda;
+
+        for (int field = 0; field < 3; ++field)
+        {
+            double sumE2 = 0.0;
+            double volumeE2 = 0.0;
+            double sumV = 0.0;
+            double sumH = 0.0;
+            double sumDeltaH = 0.0;
+            int count = 0;
+
+            // ====================================================
+            // 2. Evaluate numerical and analytical gradients
+            // ====================================================
+
+            for (int i = Nboundary; i < NfluidEnd; ++i)
+            {
+                auto val = [&](int j) -> double
+                {
+                    if (field == 0)
+                    {
+                        return sin(k*x[j]);
+                    }
+                    if (field == 1)
+                    {
+                        return sin(k*y[j]);
+                    }
+                    return sin(k*x[j])*sin(k*y[j]);
+                };
+
+                //const double Ai = val(i);
+
+                const double exactGradX =
+                    (field == 1) ? 0.0 :
+                    k*cos(k*x[i])*(field == 2 ? sin(k*y[i]) : 1.0);
+
+                const double exactGradY =
+                    (field == 0) ? 0.0 :
+                    k*cos(k*y[i])*(field == 2 ? sin(k*x[i]) : 1.0);
+
+                double gradX = 0.0;
+                double gradY = 0.0;
+
+                for (const CachedPair& p : pairCache[i])
+                {
+                    const int j = p.j;
+                    const double Vj = Vi[j];
+                    const double Aj = val(j);
+                    gradX += Vj*Aj*p.gradX;
+                    gradY += Vj*Aj*p.gradY;
+                }
+
+                // ====================================================
+                // 3. Accumulate 2D L2 derivative error
+                // ====================================================
+
+                const double error =
+                    hypot(gradX - exactGradX, gradY - exactGradY);
+
+                const double ViLocal = Vi[i];
+                const double dpi = hp[i]/coefh;
+
+                sumE2 += error*error;
+                volumeE2 += ViLocal*error*error;
+                sumV += ViLocal;
+                sumH += ViLocal*hp[i];
+                sumDeltaH += ViLocal*dpi/hp[i];
+                ++count;
+
+                local << fieldNames[field] << ','
+                      << lambdaFactor << ',' << i << ','
+                      << x[i] << ',' << y[i] << ',' << hp[i] << ','
+                      << hp[i]/lambda << ',' << dpi/hp[i] << ','
+                      << exactGradX << ',' << exactGradY << ','
+                      << gradX << ',' << gradY << ',' << error << '\n';
+            }
+
+            // ====================================================
+            // 4. Save normalised L2 error
+            // ====================================================
+
+            const double L2 = sqrt(sumE2/count)/k;
+            const double L2Area = sqrt(volumeE2/sumV)/k;
+
+            summary << kernel << ',' << coefh << ','
+                    << fieldNames[field] << ',' << lambdaFactor << ','
+                    << "standard" << ','
+                    << Nboundary << ',' << NfluidEnd << ',' << count << ','
+                    << (sumH/sumV)/lambda << ',' << sumDeltaH/sumV << ','
+                    << L2 << ',' << L2Area << '\n';
+
+            cout << "Smoothing L2: coefh=" << coefh
+                 << ", field=" << fieldNames[field]
+                 << ", lambda/Dcylinder=" << lambdaFactor
+                 << ", L2=" << L2 << '\n';
+        }
+    }
+}*/
+
+
+void runSmoothingLengthL2Test(
+    const vector<double>& x,
+    const vector<double>& y,
+    const vector<double>& Vi,
+    const vector<double>& hp,
+    const CachedPairs& pairCache,
+    int Nboundary,
+    int NfluidEnd,
+    double Dcylinder,
+    double coefh,
+    const string& kernel,
+    const string& foldername)
+{
+    ofstream summary("SmoothingLengthL2.csv", ios::app);
+    ofstream local(foldername + "/SmoothingLengthLocalError.csv");
+
+    if (!summary || !local)
+    {
+        throw runtime_error("Cannot write smoothing length CSV");
+    }
+
+    summary << setprecision(16);
+    local << setprecision(16);
+
+    local << "i,x,y,h,dp_over_h,"
+             "exactUx,exactUy,exactVx,exactVy,"
+             "sphUx,sphUy,sphVx,sphVy,error\n";
+
+    const double U = inletVelocity;
+    const double a2 = r0*r0;
+
+    // Evaluate in an annulus away from the cylinder surface.
+    const double rMin = Dcylinder;
+    const double rMax = 2.0*Dcylinder;
+
+    double sumE2 = 0.0;
+    double volumeE2 = 0.0;
+    double sumV = 0.0;
+    double sumH = 0.0;
+    double sumDeltaH = 0.0;
+    int count = 0;
+
+    // ====================================================
+    // 1. Evaluate potential-flow velocity gradients
+    // ====================================================
+
+    for (int i = Nboundary; i < NfluidEnd; ++i)
+    {
+        const double xi = x[i];
+        const double yi = y[i];
+
+        const double s = xi*xi + yi*yi;
+        const double ri = sqrt(s);
+
+        if (ri < rMin || ri > rMax)
+        {
+            continue;
+        }
+
+        const double s2 = s*s;
+        const double s3 = s2*s;
+        const double f = xi*xi - yi*yi;
+
+        // ====================================================
+        // 2. Analytical velocity gradients
+        // ====================================================
+
+        const double exactUx =
+            -U*a2*(2.0*xi/s2 - 4.0*xi*f/s3);
+
+        const double exactUy =
+            U*a2*(2.0*yi/s2 + 4.0*yi*f/s3);
+
+        const double exactVx =
+            -2.0*U*a2*
+            (yi/s2 - 4.0*xi*xi*yi/s3);
+
+        const double exactVy =
+            -2.0*U*a2*
+            (xi/s2 - 4.0*xi*yi*yi/s3);
+
+        // ====================================================
+        // 3. Standard uncorrected SPH gradients
+        // ====================================================
+
+        double gradUx = 0.0;
+        double gradUy = 0.0;
+        double gradVx = 0.0;
+        double gradVy = 0.0;
+
+        for (const CachedPair& p : pairCache[i])
+        {
+            const int j = p.j;
+
+            const double xj = x[j];
+            const double yj = y[j];
+
+            const double sj = xj*xj + yj*yj;
+
+            // Exclude positions inside the cylinder.
+            if (sj < a2)
+            {
+                continue;
+            }
+
+            const double sj2 = sj*sj;
+
+            const double uj =
+                U*(1.0 - a2*(xj*xj-yj*yj)/sj2);
+
+            const double vj =
+                -2.0*U*a2*xj*yj/sj2;
+
+            const double Vj = Vi[j];
+
+            gradUx += Vj*uj*p.gradX;
+            gradUy += Vj*uj*p.gradY;
+
+            gradVx += Vj*vj*p.gradX;
+            gradVy += Vj*vj*p.gradY;
+        }
+
+        // ====================================================
+        // 4. Velocity-gradient error
+        // ====================================================
+
+        const double error2 =
+            pow(gradUx-exactUx, 2) +
+            pow(gradUy-exactUy, 2) +
+            pow(gradVx-exactVx, 2) +
+            pow(gradVy-exactVy, 2);
+
+        const double error = sqrt(error2);
+
+        const double ViLocal = Vi[i];
+        const double dpi = hp[i]/coefh;
+
+        sumE2 += error2;
+        volumeE2 += ViLocal*error2;
+        sumV += ViLocal;
+        sumH += ViLocal*hp[i];
+        sumDeltaH += ViLocal*dpi/hp[i];
+
+        ++count;
+
+        local << i << ','
+              << xi << ',' << yi << ','
+              << hp[i] << ',' << dpi/hp[i] << ','
+              << exactUx << ',' << exactUy << ','
+              << exactVx << ',' << exactVy << ','
+              << gradUx << ',' << gradUy << ','
+              << gradVx << ',' << gradVy << ','
+              << error << '\n';
+    }
+
+    if (count == 0 || sumV <= 0.0)
+    {
+        throw runtime_error(
+            "No particles in potential-flow evaluation region"
+        );
+    }
+
+    // ====================================================
+    // 5. Unnormalised L2 error
+    // ====================================================
+
+    const double L2 =
+        sqrt(sumE2/count);
+
+    const double L2Area =
+        sqrt(volumeE2/sumV);
+
+    summary << kernel << ',' << coefh << ','
+            << "potential_flow" << ','
+            << "standard" << ','
+            << count << ','
+            << (sumH/sumV)/Dcylinder << ','
+            << sumDeltaH/sumV << ','
+            << L2 << ',' << L2Area << '\n';
+
+    cout << "Potential-flow gradient L2: ch = "
+         << coefh
+         << ", L2 = " << L2
+         << ", L2_area = " << L2Area
+         << " 1/s" << endl;
+}
+
 
 // --------------------------------------------------
 // Calculate and cache geometry once
@@ -529,197 +868,6 @@ CachedPairs makePairCache(
     }
 
     return cache;
-}
-
-
-// --------------------------------------------------
-// Pressure response to alternating pressure field
-// --------------------------------------------------
-void testAlternatingPressureAcceleration(
-    int Nboundary,
-    int NfluidEnd,
-    int NTheta,
-    int Nr,
-    const vector<double>& r,
-    const vector<double>& Vi,
-    const vector<double>& hp,
-    const CachedPairs& pairCache)
-{
-    // ====================================================
-    // 1. Diagnostic parameters
-    // ====================================================
-
-    const double p0 = 5.0;   // Uniform background pressure
-    const double A  = 1.0;   // Alternating pressure amplitude
-
-    const double rhoTest =
-        rho0*pow(1.0 + p0/B, 1.0/gammaEOS);
-
-    // No simulation state is modified.
-
-    ofstream file("AlternatingPressureResidual.csv");
-
-    file << setprecision(16);
-
-    file << "ring,theta_deg,rD,h,"
-            "pUniform,pAlternating,"
-            "axUniform,axAlternating,"
-            "axResponse,ayResponse,"
-            "responseMagnitude\n";
-
-    double maxResponse = 0.0;
-    double sumResponse2 = 0.0;
-    int count = 0;
-
-    // ====================================================
-    // 2. Prescribed alternating pressure field
-    // ====================================================
-
-    auto alternatingPressure = [&](int j)
-    {
-        // Cylinder support particles:
-        // maintain uniform background pressure.
-        if (j < Nboundary)
-            return p0;
-
-        // Works for both fluid and buffer rings.
-        int ring = (j - Nboundary)/NTheta;
-
-        return p0 + ((ring % 2 == 0) ? A : -A);
-    };
-
-    // ====================================================
-    // 3. Loop over all physical fluid particles
-    // ====================================================
-
-    for (int ir = 0; ir < Nr; ++ir)
-    {
-        for (int k = 0; k < NTheta; ++k)
-        {
-            const int i =
-                Nboundary + ir*NTheta + k;
-
-            if (i >= NfluidEnd)
-                continue;
-
-            double axUniform = 0.0;
-            double ayUniform = 0.0;
-
-            double axAlternating = 0.0;
-            double ayAlternating = 0.0;
-
-            const double piAlternating =
-                alternatingPressure(i);
-
-            // ====================================================
-            // 4. Evaluate existing SPH pressure operator
-            // ====================================================
-
-            for (const CachedPair& p : pairCache[i])
-            {
-                const int j = p.j;
-                const double Vj = Vi[j];
-
-                const double pjAlternating =
-                    alternatingPressure(j);
-
-                // Uniform-pressure case
-                const double uniformTerm =
-                    p0/(rhoTest*rhoTest);
-
-                axUniform -= Vj*rhoTest*
-                    (uniformTerm*p.gradXj
-                    -uniformTerm*p.gradXi);
-
-                ayUniform -= Vj*rhoTest*
-                    (uniformTerm*p.gradYj
-                    -uniformTerm*p.gradYi);
-
-                // Alternating-pressure case
-                const double termI =
-                    piAlternating/(rhoTest*rhoTest);
-
-                const double termJ =
-                    pjAlternating/(rhoTest*rhoTest);
-
-                axAlternating -= Vj*rhoTest*
-                    (termI*p.gradXj
-                    -termJ*p.gradXi);
-
-                ayAlternating -= Vj*rhoTest*
-                    (termI*p.gradYj
-                    -termJ*p.gradYi);
-            }
-
-            // ====================================================
-            // 5. Isolate acceleration caused by alternating mode
-            // ====================================================
-
-            const double axResponse =
-                axAlternating - axUniform;
-
-            const double ayResponse =
-                ayAlternating - ayUniform;
-
-            const double responseMagnitude =
-                sqrt(axResponse*axResponse
-                    +ayResponse*ayResponse);
-
-            maxResponse =
-                max(maxResponse,responseMagnitude);
-
-            sumResponse2 +=
-                responseMagnitude*responseMagnitude;
-
-            ++count;
-
-            // ====================================================
-            // 6. Save results
-            // ====================================================
-
-            file << ir + 1 << ","
-                 << k*360.0/NTheta << ","
-                 << (r[i]-r0)/Dcylinder << ","
-                 << hp[i] << ","
-                 << p0 << ","
-                 << piAlternating << ","
-                 << axUniform << ","
-                 << axAlternating << ","
-                 << axResponse << ","
-                 << ayResponse << ","
-                 << responseMagnitude << "\n";
-        }
-    }
-
-    file.close();
-
-    const double rmsResponse =
-        sqrt(sumResponse2/max(count,1));
-
-    // ====================================================
-    // 7. Summary
-    // ====================================================
-
-    cout << "\n====================================\n";
-    cout << "ALTERNATING PRESSURE TEST\n";
-    cout << "====================================\n";
-
-    cout << "Background pressure = "
-         << p0 << " Pa\n";
-
-    cout << "Alternating amplitude = "
-         << A << " Pa\n";
-
-    cout << "Density = "
-         << rhoTest << " kg/m3\n";
-
-    cout << "Maximum acceleration response = "
-         << maxResponse << " m/s2\n";
-
-    cout << "RMS acceleration response = "
-         << rmsResponse << " m/s2\n";
-
-    cout << "Saved: AlternatingPressureResidual.csv\n";
 }
 
 
@@ -836,120 +984,6 @@ inline void accumulateInteraction(
     duAcc += viscCoeff*p.gradAVX;
     dvAcc += viscCoeff*p.gradAVY;*/
 }
-
-// ------------------------------------------------------------
-// DIAGNOSTIC ONLY: decompose radial momentum acceleration
-// at theta = 0 and 180 degrees for the first fluid rings.
-// Uses the same state and cached pairs as accumulateInteraction().
-// Does not modify the numerical solution.
-// ------------------------------------------------------------
-void writeRadialMomentumDiagnostic(
-    ofstream& out, double t, int timestep,
-    int NTheta, int Nr, int Nboundary,
-    const vector<double>& r,
-    const vector<double>& theta,
-    const vector<double>& u,
-    const vector<double>& v,
-    const vector<double>& rho,
-    const vector<double>& pressure,
-    const vector<double>& Vi,
-    const vector<double>& dudt,
-    const vector<double>& dvdt,
-    const CachedPairs& pairCache)
-{
-    const int maxRings = min(Nr, 10);
-    const int angleIndices[2] = {0, NTheta/2};
-
-    for (int ia = 0; ia < 2; ++ia)
-    {
-        const int k = angleIndices[ia];
-        for (int ring = 0; ring < maxRings; ++ring)
-        {
-            const int i = Nboundary + ring*NTheta + k;
-            double axAdvection = 0.0, ayAdvection = 0.0;
-            double axPressure = 0.0, ayPressure = 0.0;
-            double axArtificial = 0.0, ayArtificial = 0.0;
-            double axPhysical = 0.0, ayPhysical = 0.0;
-            double axBoundary = 0.0, ayBoundary = 0.0;
-            double axFluid = 0.0, ayFluid = 0.0;
-
-            for (const CachedPair& p : pairCache[i])
-            {
-                const int j = p.j;
-                const double Vj = Vi[j];
-                const double du = u[i] - u[j];
-                const double dv = v[i] - v[j];
-                const double velocityDotGradient = u[i]*p.gradX + v[i]*p.gradY;
-                const double rhoij = 0.5*(rho[i]+rho[j]);
-
-                // Eulerian advective acceleration; identical to solver.
-                const double axA = -Vj*(u[j]-u[i])*velocityDotGradient;
-                const double ayA = -Vj*(v[j]-v[i])*velocityDotGradient;
-
-                // Vacondio symmetric pressure acceleration; identical to solver.
-                const double pressureTermI = pressure[i]/(rho[j]*rho[i]);
-                const double pressureTermJ = pressure[j]/(rho[j]*rho[i]);
-                const double axP = -Vj*rho[j]*(pressureTermI*p.gradXj - pressureTermJ*p.gradXi);
-                const double ayP = -Vj*rho[j]*(pressureTermI*p.gradYj - pressureTermJ*p.gradYi);
-
-                // Monaghan artificial viscosity (zero if alphaAV=betaAV=0).
-                const double vijrij = du*p.rx + dv*p.ry;
-                double Piij = 0.0;
-                if (vijrij < 0.0)
-                {
-                    const double muij = p.hbar*vijrij/(p.r2 + 0.01*p.hbar*p.hbar);
-                    Piij = -alphaAV*c0*muij/rhoij + betaAV*muij*muij/rhoij;
-                }
-                const double axAV = -Vj*rho[j]*Piij*p.gradAVX;
-                const double ayAV = -Vj*rho[j]*Piij*p.gradAVY;
-
-                // Active Morris physical viscosity; identical to solver.
-                const double massJ = rho[j]*Vj;
-                const double viscCoeff = 2.0*viscosity*massJ*p.viscGeo/rhoij;
-                const double axV = viscCoeff*du;
-                const double ayV = viscCoeff*dv;
-
-                axAdvection += axA; ayAdvection += ayA;
-                axPressure += axP; ayPressure += ayP;
-                axArtificial += axAV; ayArtificial += ayAV;
-                axPhysical += axV; ayPhysical += ayV;
-
-                // Extra partition: all neighbour forces by particle type.
-                if (j < Nboundary)
-                {
-                    axBoundary += axA + axP + axAV + axV;
-                    ayBoundary += ayA + ayP + ayAV + ayV;
-                }
-                else
-                {
-                    axFluid += axA + axP + axAV + axV;
-                    ayFluid += ayA + ayP + ayAV + ayV;
-                }
-            }
-
-            const double ct = cos(theta[i]);
-            const double st = sin(theta[i]);
-            const auto radial = [ct,st](double ax, double ay) { return ax*ct + ay*st; };
-            const double aAdvection = radial(axAdvection,ayAdvection);
-            const double aPressure = radial(axPressure,ayPressure);
-            const double aArtificial = radial(axArtificial,ayArtificial);
-            const double aPhysical = radial(axPhysical,ayPhysical);
-            const double aSum = aAdvection+aPressure+aArtificial+aPhysical;
-            const double aTotal = radial(dudt[i],dvdt[i]);
-
-            out << t << ',' << timestep << ',' << (ia == 0 ? 0 : 180) << ','
-                << (ring+1) << ',' << i << ',' << r[i] << ','
-                << (r[i]-r0)/Dcylinder << ','
-                << radial(u[i],v[i]) << ',' << pressure[i] << ','
-                << aAdvection << ',' << aPressure << ','
-                << aPhysical << ',' << aArtificial << ','
-                << aSum << ',' << aTotal << ',' << (aSum-aTotal) << ','
-                << radial(axBoundary,ayBoundary) << ','
-                << radial(axFluid,ayFluid) << '\n';
-        }
-    }
-}
-
 
 
 
@@ -2603,10 +2637,34 @@ int main()
     #endif
 
     cout<<"enter the kernel to be used (gaussian, cubic, wendland): ";
-            cin>>kernel;
+    cin>>kernel;
+
+    if (kernel != "gaussian" &&
+    kernel != "cubic" &&
+    kernel != "wendland")
+    {
+        throw invalid_argument(
+            "Invalid kernel. Use gaussian, cubic, or wendland."
+        );
+    }
 
     
     int Nh = hlist.size();
+    /*if (SmoothingLengthTest)
+    {
+        ofstream out("SmoothingLengthL2.csv");
+        out << "kernel,ch,field,lambda_over_D,method,"
+       "firstFluid,fluidEnd,count,h_over_lambda,"
+       "delta_over_h,L2,L2_area\n";
+    }*/
+
+    if (SmoothingLengthTest)
+    {
+        ofstream out("SmoothingLengthL2.csv");
+
+        out << "kernel,ch,field,method,count,"
+            "h_over_D,delta_over_h,L2,L2_area\n";
+    }
 
     double qAlow = 0.0;
     double qAhigh = 2.0;
@@ -3319,31 +3377,16 @@ int main()
         const CachedPairs pairCache = makePairCache(
             neighbours, x, y, hp, Nboundary, NfluidEnd, kernel);
 
-        
-        // ====================================================
-        // STANDALONE CONSTANT-PRESSURE TEST
-        // ====================================================
-
-        
-        if (PressureTest)
+        if (SmoothingLengthTest)
         {
-           testAlternatingPressureAcceleration(
-            Nboundary,
-            NfluidEnd,
-            NTheta,
-            Nr,
-            r,
-            Vi,
-            hp,
-            pairCache
+            runSmoothingLengthL2Test(
+                x, y, Vi, hp, pairCache,
+                Nboundary, NfluidEnd,
+                Dcylinder, coefh, kernel, foldername
             );
 
-            cout << "Constant-pressure test completed.\n";
-
-            return 0;
+            continue;
         }
-
-
 
 
 // ----------------------------------------------
@@ -3738,17 +3781,7 @@ int main()
 
                 << endl;
 
-        ofstream radialMomentumFile(
-            foldername + "/RadialMomentumDiagnostic_hdp_"
-            + to_string(coefh) + ".csv");
-
-        radialMomentumFile << setprecision(17);
-
-        radialMomentumFile
-            << "t,timestep,thetaDeg,fluidRing,particleID,r,rMinusR0OverD,"
-            << "ur,pressure,arAdvection,arPressure,arPhysicalViscosity,"
-            << "arArtificialViscosity,arSum,arSolver,arDifference,"
-            << "arBoundaryNeighbours,arFluidAndBufferNeighbours\n";
+       
         while (t < Totaltime)
         {
 
@@ -3967,14 +4000,6 @@ int main()
                    
             }
 
-            /*if (t >= nextOutputTime - 1e-12)
-            {
-                writeRadialMomentumDiagnostic(
-                    radialMomentumFile, t, n,
-                    NTheta, Nr, Nboundary,
-                    r, theta, u, v, rho, pressure,
-                    Vi, dudt, dvdt, pairCache);
-            }*/
 
             //Calculate Dt
             double dt = CFL*calculateDt(
