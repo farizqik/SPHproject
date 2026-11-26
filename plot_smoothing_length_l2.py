@@ -1,590 +1,199 @@
+"""Journal-style plots of regional SPH potential-flow velocity-gradient errors.
 
-"""
-2D SPH potential-flow velocity-gradient L2 error plots.
+Place next to SmoothingLengthL2.csv and run:
+    python plot_potential_flow_regions_journal.py
 
-Standard uncorrected SPH gradient:
-    grad(A_i) = sum_j V_j * A_j * grad(W_ij)
-
-Analytical potential flow around a circular cylinder.
-No time-dependent simulation.
-
-Produces both:
-    1. Semi-log plots (logarithmic x-axis, linear y-axis)
-    2. Log-log plots (logarithmic x-axis and y-axis)
-
-Run:
-    python plot_potential_flow_gradient.py SmoothingLengthL2.csv
-
-Optional:
-    python plot_potential_flow_gradient.py SmoothingLengthL2.csv --error L2
-
-    python plot_potential_flow_gradient.py SmoothingLengthL2.csv --error L2_area
+Creates six figures (linear, semilogx, loglog for h/dp and mean h/D),
+each saved as PDF, PNG, and SVG in the same folder as this script.
 """
 
-import argparse
 import csv
 import math
 from pathlib import Path
 
-import matplotlib
-matplotlib.use('Agg')
-
 import matplotlib.pyplot as plt
+from matplotlib.ticker import AutoMinorLocator, LogLocator, NullFormatter, ScalarFormatter
 
-from matplotlib.ticker import (
-    LogLocator,
-    LogFormatterMathtext,
-    FuncFormatter,
-    MaxNLocator,
-    ScalarFormatter,
-)
+FOLDER = Path(__file__).resolve().parent
+CSV_FILE = FOLDER / "SmoothingLengthL2.csv"
 
+# Disjoint regions first, then overlapping aggregates.
+REGIONS = {
+    "wall_0.5D_1D": r"$0.5D\leq r<D$",
+    "near_1D_2D": r"$D\leq r<2D$",
+    "outer_2D_10D": r"$2D\leq r\leq10D$",
+    "excluding_wall_1D_10D": r"$D\leq r\leq10D$",
+    "full_0.5D_10D": r"$0.5D\leq r\leq10D$",
+}
 
-# ====================================================
-# 1. Logarithmic x-axis tick labels
-# ====================================================
-
-def tick_label(value, position):
-
-    if value <= 0 or not math.isfinite(value):
-        return ''
-
-    exponent = math.floor(math.log10(value))
-    mantissa = value / 10**exponent
-
-    if not any(
-        abs(mantissa - target) < 1e-6
-        for target in (1, 2, 5)
-    ):
-        return ''
-
-    if 0.001 <= value < 10000:
-        return f'{value:g}'
-
-    return rf'${value:.0e}$'
+# Five curves remain identifiable in monochrome printing.
+STYLES = {
+    "wall_0.5D_1D": dict(color="0.05", linestyle="-", marker="o"),
+    "near_1D_2D": dict(color="0.30", linestyle="--", marker="s"),
+    "outer_2D_10D": dict(color="0.48", linestyle="-.", marker="^"),
+    "excluding_wall_1D_10D": dict(color="0.25", linestyle=":", marker="D"),
+    "full_0.5D_10D": dict(color="0.60", linestyle="-", marker="v"),
+}
 
 
-# ====================================================
-# 2. Load potential-flow L2 results
-# ====================================================
+def load_results():
+    if not CSV_FILE.is_file():
+        raise FileNotFoundError(
+            f"Missing CSV: {CSV_FILE}\n"
+            "Put this script next to the newly generated SmoothingLengthL2.csv."
+        )
 
-def load_results(path):
-
-    results = []
-
-    with path.open(
-        newline='',
-        encoding='utf-8-sig'
-    ) as handle:
-
+    data = {region: {} for region in REGIONS}
+    with CSV_FILE.open("r", newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
-
-        required = {
-            'kernel',
-            'ch',
-            'field',
-            'method',
-            'h_over_D',
-            'delta_over_h',
-            'L2',
-            'L2_area'
-        }
-
+        required = {"ch", "field", "method", "region", "h_over_D", "L2_area"}
         missing = required - set(reader.fieldnames or [])
-
         if missing:
             raise ValueError(
-                f'Missing CSV columns: {sorted(missing)}'
+                f"CSV is missing {sorted(missing)}.\n"
+                "The C++ summary header must include the 'region' column."
             )
 
-        for row in reader:
-
-            if row['field'].strip().lower() != 'potential_flow':
+        for line, row in enumerate(reader, start=2):
+            region = (row.get("region") or "").strip()
+            if region not in data:
                 continue
-
-            if row['method'].strip().lower() != 'standard':
+            if (row.get("field") or "").strip().lower() != "potential_flow":
                 continue
-
+            if (row.get("method") or "").strip().lower() != "standard":
+                continue
             try:
+                ch = float(row["ch"])
+                hd = float(row["h_over_D"])
+                err = float(row["L2_area"])
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"Invalid numerical value on CSV line {line}") from exc
+            if not all(math.isfinite(v) for v in (ch, hd, err)) or ch <= 0 or hd <= 0 or err < 0:
+                raise ValueError(f"Invalid data on CSV line {line}")
+            # When the CSV contains repeated runs, retain the last entry for each ch.
+            data[region][ch] = {"h_over_dp": ch, "h_over_D": hd, "error": err}
 
-                ch = float(row['ch'])
-                h_over_D = float(row['h_over_D'])
-                dp_over_h = float(row['delta_over_h'])
-                L2 = float(row['L2'])
-                L2_area = float(row['L2_area'])
-
-            except (ValueError, TypeError):
-                continue
-
-            values = (
-                ch,
-                h_over_D,
-                dp_over_h,
-                L2,
-                L2_area
-            )
-
-            if not all(math.isfinite(v) for v in values):
-                continue
-
-            if ch <= 0 or h_over_D <= 0 or dp_over_h <= 0:
-                continue
-
-            if L2 < 0 or L2_area < 0:
-                continue
-
-            # results.append({
-            #     'kernel': row['kernel'].strip().lower(),
-            #     'ch': ch,
-            #     'h_over_D': h_over_D,
-            #     'dp_over_h': dp_over_h,
-            #     'L2': L2,
-            #     'L2_area': L2_area
-            # })
-            
-            results.append({
-                'kernel': row['kernel'].strip().lower(),
-                'ch': ch,
-                'h_over_D': h_over_D,
-                'h_over_dp': 1.0 / dp_over_h,
-                'L2': L2,
-                'L2_area': L2_area
-            })
-
-    if not results:
-        raise ValueError(
-            'No potential-flow standard SPH results found. '
-            'Check the CSV field and method columns.'
-        )
-
-    return results
+    if not any(data.values()):
+        raise ValueError("No potential_flow / standard region results found in the CSV.")
+    return data
 
 
-# ====================================================
-# 3. Research-paper plotting style
-# ====================================================
-
-def paper_style():
-
+def set_style():
     plt.rcParams.update({
-
-        'font.family': 'serif',
-        'font.size': 10,
-
-        'axes.labelsize': 11,
-        'axes.titlesize': 11,
-        'axes.linewidth': 0.9,
-
-        'xtick.labelsize': 9,
-        'ytick.labelsize': 9,
-
-        'xtick.direction': 'in',
-        'ytick.direction': 'in',
-
-        'xtick.top': True,
-        'ytick.right': True,
-
-        'xtick.major.size': 5,
-        'ytick.major.size': 5,
-
-        'xtick.minor.size': 2.5,
-        'ytick.minor.size': 2.5,
-
-        'legend.fontsize': 9,
-
-        'pdf.fonttype': 42,
-        'savefig.dpi': 350,
-
+        "font.family": "serif",
+        "font.size": 9,
+        "mathtext.fontset": "stix",
+        "axes.labelsize": 10,
+        "axes.linewidth": 0.8,
+        "axes.spines.top": True,
+        "axes.spines.right": True,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        "xtick.top": True,
+        "ytick.right": True,
+        "xtick.major.size": 4,
+        "ytick.major.size": 4,
+        "xtick.minor.size": 2,
+        "ytick.minor.size": 2,
+        "xtick.major.width": 0.8,
+        "ytick.major.width": 0.8,
+        "xtick.minor.width": 0.6,
+        "ytick.minor.width": 0.6,
+        "legend.fontsize": 8,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "svg.fonttype": "none",
+        "savefig.dpi": 400,
     })
 
 
-# ====================================================
-# 4. Format axes
-# ====================================================
+def format_axes(ax, scale, x_label):
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(r"$L_{2,\nabla\mathbf{u}}\; (\mathrm{s}^{-1})$")
+    ax.set_xscale("log" if scale in ("semilogx", "loglog") else "linear")
+    ax.set_yscale("log" if scale == "loglog" else "linear")
 
-def format_axis(ax, xlabel, errors, log_y=False):
-
-    # ====================================================
-    # X-axis: logarithmic for both plot types
-    # ====================================================
-
-    ax.set_xscale('log')
-
-    ax.xaxis.set_major_locator(
-        LogLocator(
-            base=10,
-            subs=(1.0, 2.0, 5.0),
-            numticks=40
-        )
-    )
-
-    ax.xaxis.set_major_formatter(
-        FuncFormatter(tick_label)
-    )
-
-    ax.xaxis.set_minor_locator(
-        LogLocator(
-            base=10,
-            subs=(3, 4, 6, 7, 8, 9),
-            numticks=100
-        )
-    )
-
-    # ====================================================
-    # Y-axis: linear or logarithmic
-    # ====================================================
-
-    if log_y:
-
-        positive_errors = [
-            error
-            for error in errors
-            if error > 0
-        ]
-
-        if not positive_errors:
-            raise ValueError(
-                'No positive L2 errors available '
-                'for logarithmic plotting.'
-            )
-
-        ymin = min(positive_errors)
-        ymax = max(positive_errors)
-
-        ax.set_yscale('log')
-
-        ax.set_ylim(
-            ymin / 1.2,
-            ymax * 1.2
-        )
-
-        ax.yaxis.set_major_locator(
-            LogLocator(
-                base=10,
-                numticks=12
-            )
-        )
-
-        ax.yaxis.set_major_formatter(
-            LogFormatterMathtext(base=10)
-        )
-
-        ax.yaxis.set_minor_locator(
-            LogLocator(
-                base=10,
-                subs=tuple(range(2, 10)),
-                numticks=100
-            )
-        )
-
+    if scale in ("semilogx", "loglog"):
+        ax.xaxis.set_minor_locator(LogLocator(base=10, subs=range(2, 10)))
+        ax.xaxis.set_minor_formatter(NullFormatter())
     else:
+        ax.xaxis.set_minor_locator(AutoMinorLocator(2))
 
-        ymin = min(errors)
-        ymax = max(errors)
+    if scale == "loglog":
+        ax.yaxis.set_minor_locator(LogLocator(base=10, subs=range(2, 10)))
+        ax.yaxis.set_minor_formatter(NullFormatter())
+    else:
+        ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+        sf = ScalarFormatter(useOffset=False, useMathText=True)
+        sf.set_powerlimits((-3, 3))
+        ax.yaxis.set_major_formatter(sf)
+        ax.set_ylim(bottom=0)
 
-        ax.set_yscale('linear')
-
-        if ymax > ymin:
-
-            padding = 0.08 * (ymax - ymin)
-
-            ax.set_ylim(
-                max(0.0, ymin - padding),
-                ymax + padding
-            )
-
-        else:
-
-            padding = max(
-                0.05 * abs(ymin),
-                1e-6
-            )
-
-            ax.set_ylim(
-                max(0.0, ymin - padding),
-                ymax + padding
-            )
-
-        ax.yaxis.set_major_locator(
-            MaxNLocator(nbins=8)
-        )
-
-        ax.yaxis.set_major_formatter(
-            ScalarFormatter(useOffset=False)
-        )
-
-        ax.ticklabel_format(
-            axis='y',
-            style='plain',
-            useOffset=False
-        )
-
-    # ====================================================
-    # Labels and grid
-    # ====================================================
-
-    ax.set_xlabel(xlabel)
-
-    ax.set_ylabel(
-        r'$L_2$ velocity-gradient error (s$^{-1}$)'
-    )
-
-    ax.grid(
-        True,
-        which='major',
-        color='0.85',
-        linewidth=0.5,
-        alpha=0.6
-    )
-
-    ax.grid(
-        False,
-        which='minor'
-    )
+    # Subtle horizontal guides; no dense full grid.
+    ax.grid(axis="y", which="major", color="0.88", linewidth=0.45)
+    ax.set_axisbelow(True)
+    ax.margins(x=0.035)
 
 
-# ====================================================
-# 5. Plot potential-flow gradient L2 error
-# ====================================================
+def plot_one(data, x_key, x_label, scale):
+    fig, ax = plt.subplots(figsize=(6.6, 3.65))
+    any_curve = False
 
-def plot_results(
-    results,
-    folder,
-    prefix,
-    x_key,
-    xlabel,
-    error_key,
-    log_y=False
-):
-
-    fig, ax = plt.subplots(
-        figsize=(5.5, 4.0)
-    )
-
-    kernels = sorted({
-        row['kernel']
-        for row in results
-    })
-
-    colors = [
-        'black',
-        '0.4',
-        '0.65',
-        '0.25'
-    ]
-
-    styles = [
-        '-',
-        '--',
-        '-.',
-        ':'
-    ]
-
-    all_errors = []
-
-    for index, kernel in enumerate(kernels):
-
-        selected = [
-            row
-            for row in results
-            if row['kernel'] == kernel
-        ]
-
-        # Retain the final result for duplicate x-values.
-        by_x = {
-            row[x_key]: row[error_key]
-            for row in selected
-        }
-
-        xs = sorted(by_x)
-
-        if log_y:
-
-            # Logarithmic axes cannot display zero or negative errors.
-            xs = [
-                x for x in xs
-                if by_x[x] > 0
-            ]
-
-        ys = [
-            by_x[x]
-            for x in xs
-        ]
-
-        if not xs:
+    for region, label in REGIONS.items():
+        rows = sorted(data[region].values(), key=lambda row: row[x_key])
+        if scale == "loglog":
+            rows = [row for row in rows if row["error"] > 0]
+        if not rows:
             continue
-
-        all_errors.extend(ys)
-
         ax.plot(
-            xs,
-            ys,
-
-            color=colors[index % len(colors)],
-            linestyle=styles[index % len(styles)],
-
-            linewidth=1.3,
-
-            marker='o',
-            markersize=3.5,
-
-            markerfacecolor='white',
-            markeredgewidth=0.8,
-
-            label=kernel.capitalize()
+            [row[x_key] for row in rows],
+            [row["error"] for row in rows],
+            label=label,
+            linewidth=1.15,
+            markersize=3.4,
+            markerfacecolor="white",
+            markeredgewidth=0.85,
+            markevery=max(1, len(rows) // 12),
+            **STYLES[region],
         )
+        any_curve = True
 
-    if not all_errors:
+    if not any_curve:
         plt.close(fig)
-        print(
-            f'Skipped {prefix}: no valid data '
-            f'for this axis scale.'
-        )
+        print(f"Skipped {x_key} {scale}: no valid values")
         return
 
-    format_axis(
-        ax,
-        xlabel,
-        all_errors,
-        log_y=log_y
-    )
+    format_axes(ax, scale, x_label)
+    # A right-side legend keeps overlapping results visible.
+    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5),
+              frameon=False, handlelength=2.5, labelspacing=0.85,
+              borderaxespad=0)
+    fig.subplots_adjust(left=0.13, right=0.68, bottom=0.17, top=0.96)
 
-    ax.set_title(
-        'Potential-flow velocity-gradient error',
-        pad=8
-    )
-
-    ax.legend(
-        loc='best',
-        frameon=False,
-        handlelength=2.5
-    )
-
-    fig.tight_layout()
-
-    # ====================================================
-    # Save PNG and PDF
-    # ====================================================
-
-    scale_suffix = (
-        '_loglog'
-        if log_y
-        else '_semilogx'
-    )
-
-    for ext in ('.png', '.pdf'):
-
-        target = (
-            folder /
-            f'{prefix}{scale_suffix}{ext}'
-        )
-
-        fig.savefig(
-            target,
-            bbox_inches='tight',
-            facecolor='white'
-        )
-
-        print('Saved', target)
-
+    basename = f"Nr200_L2_regions_vs_{x_key}_{scale}"
+    for ext in ("png", "pdf", "svg"):
+        output = FOLDER / f"{basename}.{ext}"
+        fig.savefig(output, bbox_inches="tight", facecolor="white")
+        print("Saved:", output)
     plt.close(fig)
 
 
-# ====================================================
-# 6. Main
-# ====================================================
-
 def main():
-
-    parser = argparse.ArgumentParser(
-        description=__doc__
-    )
-
-    parser.add_argument(
-        'csv',
-        nargs='?',
-        default='SmoothingLengthL2.csv',
-        help='CSV output from the C++ potential-flow gradient test'
-    )
-
-    parser.add_argument(
-        '--output',
-        help='Output folder; default: same as CSV'
-    )
-
-    parser.add_argument(
-        '--error',
-        choices=[
-            'L2',
-            'L2_area'
-        ],
-        default='L2_area',
-        help='Error metric to plot'
-    )
-
-    args = parser.parse_args()
-
-    csv_path = Path(args.csv)
-
-    results = load_results(csv_path)
-
-    paper_style()
-
-    folder = (
-        Path(args.output)
-        if args.output
-        else csv_path.parent
-    )
-
-    folder.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    # ====================================================
-    # Generate both semi-log and log-log figures
-    # ====================================================
-
-    for log_y in (False, True):
-
-        # L2 versus h/D
-
-        plot_results(
-            results,
-            folder,
-            'L2_vs_h_over_D',
-            'h_over_D',
-            r'$h/D$',
-            args.error,
-            log_y=log_y
-        )
-        
-        # L2 versus dp/h
-
-        # plot_results(
-        #     results,
-        #     folder,
-        #     'L2_vs_dp_over_h',
-        #     'dp_over_h',
-        #     r'$dp/h$',
-        #     args.error,
-        #     log_y=log_y
-        # )
-        
-        plot_results(
-            results,
-            folder,
-            'L2_vs_h_over_dp',
-            'h_over_dp',
-            r'$h/dp$',
-            args.error,
-            log_y=log_y
-        )
-
-    print(
-        'Finished: potential-flow gradient L2 plots generated.'
-    )
+    print("Reading:", CSV_FILE)
+    data = load_results()
+    for region in REGIONS:
+        print(f"  {region}: {len(data[region])} smoothing lengths")
+    set_style()
+    for x_key, x_label in (
+        ("h_over_dp", r"$h/\Delta p$"),
+        ("h_over_D", r"$\overline{h}/D$"),
+    ):
+        for scale in ("linear", "semilogx", "loglog"):
+            plot_one(data, x_key, x_label, scale)
+    print("\nAll plots saved in:", FOLDER)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

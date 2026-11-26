@@ -23,7 +23,7 @@ using namespace std;
 
 const double dtMax = 0.001;
 const double dtMin = 1.0e-8;
-const double CFL = 0.15;
+const double CFL = 0.3;
 const double OutputTimeInterval = 0.1;  
 const double Totaltime = 20 + OutputTimeInterval;
 
@@ -59,7 +59,7 @@ const double c0 = 20.0*inletVelocity;
 
 const double gammaEOS = 7.0; // morris EOS = 1.0, Tait EOS = 7.0
 const double B = c0*c0*rho0/gammaEOS;
-const double Re = 1000.0;  // Reynolds number
+const double Re = 100.0;  // Reynolds number
 
 const double Dcylinder = 0.1;
 const double r0 = 0.5*Dcylinder; 
@@ -79,7 +79,7 @@ const double deltadifussion = 0.0;
 
 
 const int NsupportLayers = 4;
-const int Nr = 100;
+const int Nr = 200;
 const int Nbuffer = 6;      // open-boundary buffer rings
 int NrTotal = Nr + Nbuffer;
 
@@ -105,7 +105,7 @@ vector<double> hlist = {
 // "no-slip"   = impulsively started viscous cylinder
 // "free-slip" = potential-flow benchmark
 
-const string boundaryCondition = "free-slip";
+const string boundaryCondition = "no-slip";
 
 const bool useNoSlip =
     (boundaryCondition == "no-slip");
@@ -113,7 +113,7 @@ const bool useNoSlip =
 const string testScenario =
     useNoSlip ? "viscous" : "potential";
 
-const string outerBoundaryCondition = "zero-gradient";
+const string outerBoundaryCondition = "riemann";
 // Options: "riemann", "zero-gradient"
 
 const bool SmoothingLengthTest = true;
@@ -599,9 +599,33 @@ void runSmoothingLengthL2Test(
     const string& kernel,
     const string& foldername)
 {
+    struct Region
+    {
+        string name;
+        double rMin;
+        double rMax;
+        double sumE2 = 0.0;
+        double volumeE2 = 0.0;
+        double sumV = 0.0;
+        double sumH = 0.0;
+        double sumDeltaH = 0.0;
+        int count = 0;
+    };
+
+    const double D = Dcylinder;
+    const double a2 = r0*r0;
+    const double U = inletVelocity;
+
+    vector<Region> regions = {
+        {"wall_0.5D_1D", 0.5*D, D},
+        {"near_1D_2D", D, 2.0*D},
+        {"outer_2D_10D", 2.0*D, 10.0*D},
+        {"excluding_wall_1D_10D", D, 10.0*D},
+        {"full_0.5D_10D", 0.5*D, 10.0*D}
+    };
+
     ofstream summary("SmoothingLengthL2.csv", ios::app);
     ofstream local(foldername + "/SmoothingLengthLocalError.csv");
-
     if (!summary || !local)
     {
         throw runtime_error("Cannot write smoothing length CSV");
@@ -609,38 +633,20 @@ void runSmoothingLengthL2Test(
 
     summary << setprecision(16);
     local << setprecision(16);
-
-    local << "i,x,y,h,dp_over_h,"
+    local << "i,x,y,r_over_D,h,dp_over_h,"
              "exactUx,exactUy,exactVx,exactVy,"
              "sphUx,sphUy,sphVx,sphVy,error\n";
 
-    const double U = inletVelocity;
-    const double a2 = r0*r0;
-
-    // Evaluate in an annulus away from the cylinder surface.
-    const double rMin = Dcylinder;
-    const double rMax = 2.0*Dcylinder;
-
-    double sumE2 = 0.0;
-    double volumeE2 = 0.0;
-    double sumV = 0.0;
-    double sumH = 0.0;
-    double sumDeltaH = 0.0;
-    int count = 0;
-
-    // ====================================================
-    // 1. Evaluate potential-flow velocity gradients
-    // ====================================================
-
+    // Compute the SPH gradient only once per fluid particle.
+    // The same local error is accumulated into each relevant region.
     for (int i = Nboundary; i < NfluidEnd; ++i)
     {
         const double xi = x[i];
         const double yi = y[i];
-
         const double s = xi*xi + yi*yi;
         const double ri = sqrt(s);
 
-        if (ri < rMin || ri > rMax)
+        if (ri < 0.5*D || ri > 10.0*D)
         {
             continue;
         }
@@ -649,27 +655,14 @@ void runSmoothingLengthL2Test(
         const double s3 = s2*s;
         const double f = xi*xi - yi*yi;
 
-        // ====================================================
-        // 2. Analytical velocity gradients
-        // ====================================================
-
         const double exactUx =
             -U*a2*(2.0*xi/s2 - 4.0*xi*f/s3);
-
         const double exactUy =
             U*a2*(2.0*yi/s2 + 4.0*yi*f/s3);
-
         const double exactVx =
-            -2.0*U*a2*
-            (yi/s2 - 4.0*xi*xi*yi/s3);
-
+            -2.0*U*a2*(yi/s2 - 4.0*xi*xi*yi/s3);
         const double exactVy =
-            -2.0*U*a2*
-            (xi/s2 - 4.0*xi*yi*yi/s3);
-
-        // ====================================================
-        // 3. Standard uncorrected SPH gradients
-        // ====================================================
+            -2.0*U*a2*(xi/s2 - 4.0*xi*yi*yi/s3);
 
         double gradUx = 0.0;
         double gradUy = 0.0;
@@ -679,99 +672,96 @@ void runSmoothingLengthL2Test(
         for (const CachedPair& p : pairCache[i])
         {
             const int j = p.j;
-
             const double xj = x[j];
             const double yj = y[j];
-
             const double sj = xj*xj + yj*yj;
-
-            // Exclude positions inside the cylinder.
             if (sj < a2)
             {
                 continue;
             }
 
             const double sj2 = sj*sj;
-
             const double uj =
-                U*(1.0 - a2*(xj*xj-yj*yj)/sj2);
-
+                U*(1.0 - a2*(xj*xj - yj*yj)/sj2);
             const double vj =
                 -2.0*U*a2*xj*yj/sj2;
-
             const double Vj = Vi[j];
 
             gradUx += Vj*uj*p.gradX;
             gradUy += Vj*uj*p.gradY;
-
             gradVx += Vj*vj*p.gradX;
             gradVy += Vj*vj*p.gradY;
         }
 
-        // ====================================================
-        // 4. Velocity-gradient error
-        // ====================================================
-
         const double error2 =
-            pow(gradUx-exactUx, 2) +
-            pow(gradUy-exactUy, 2) +
-            pow(gradVx-exactVx, 2) +
-            pow(gradVy-exactVy, 2);
-
-        const double error = sqrt(error2);
+            pow(gradUx - exactUx, 2) +
+            pow(gradUy - exactUy, 2) +
+            pow(gradVx - exactVx, 2) +
+            pow(gradVy - exactVy, 2);
 
         const double ViLocal = Vi[i];
         const double dpi = hp[i]/coefh;
 
-        sumE2 += error2;
-        volumeE2 += ViLocal*error2;
-        sumV += ViLocal;
-        sumH += ViLocal*hp[i];
-        sumDeltaH += ViLocal*dpi/hp[i];
+        for (Region& region : regions)
+        {
+            // Half-open bins for the three disjoint radial bands.
+            // The two aggregate regions include their endpoints.
+            bool inRegion = (ri >= region.rMin && ri <= region.rMax);
+            if (region.name == "wall_0.5D_1D")
+            {
+                inRegion = (ri >= region.rMin && ri < region.rMax);
+            }
+            else if (region.name == "near_1D_2D")
+            {
+                inRegion = (ri >= region.rMin && ri < region.rMax);
+            }
 
-        ++count;
+            if (!inRegion)
+            {
+                continue;
+            }
 
-        local << i << ','
-              << xi << ',' << yi << ','
-              << hp[i] << ',' << dpi/hp[i] << ','
+            region.sumE2 += error2;
+            region.volumeE2 += ViLocal*error2;
+            region.sumV += ViLocal;
+            region.sumH += ViLocal*hp[i];
+            region.sumDeltaH += ViLocal*dpi/hp[i];
+            ++region.count;
+        }
+
+        local << i << ',' << xi << ',' << yi << ','
+              << ri/D << ',' << hp[i] << ',' << dpi/hp[i] << ','
               << exactUx << ',' << exactUy << ','
               << exactVx << ',' << exactVy << ','
               << gradUx << ',' << gradUy << ','
               << gradVx << ',' << gradVy << ','
-              << error << '\n';
+              << sqrt(error2) << '\n';
     }
 
-    if (count == 0 || sumV <= 0.0)
+    for (const Region& region : regions)
     {
-        throw runtime_error(
-            "No particles in potential-flow evaluation region"
-        );
+        if (region.count == 0 || region.sumV <= 0.0)
+        {
+            throw runtime_error("No particles in region: " + region.name);
+        }
+
+        const double L2 = sqrt(region.sumE2/region.count);
+        const double L2Area = sqrt(region.volumeE2/region.sumV);
+
+        summary << kernel << ',' << coefh << ','
+                << "potential_flow" << ',' << "standard" << ','
+                << region.name << ',' << region.rMin/D << ','
+                << region.rMax/D << ',' << region.count << ','
+                << (region.sumH/region.sumV)/D << ','
+                << region.sumDeltaH/region.sumV << ','
+                << L2 << ',' << L2Area << '\n';
+
+        cout << "ch=" << coefh << ", region=" << region.name
+             << ", L2_area=" << L2Area << " 1/s" << endl;
     }
-
-    // ====================================================
-    // 5. Unnormalised L2 error
-    // ====================================================
-
-    const double L2 =
-        sqrt(sumE2/count);
-
-    const double L2Area =
-        sqrt(volumeE2/sumV);
-
-    summary << kernel << ',' << coefh << ','
-            << "potential_flow" << ','
-            << "standard" << ','
-            << count << ','
-            << (sumH/sumV)/Dcylinder << ','
-            << sumDeltaH/sumV << ','
-            << L2 << ',' << L2Area << '\n';
-
-    cout << "Potential-flow gradient L2: ch = "
-         << coefh
-         << ", L2 = " << L2
-         << ", L2_area = " << L2Area
-         << " 1/s" << endl;
 }
+
+
 
 
 // --------------------------------------------------
@@ -2650,21 +2640,23 @@ int main()
 
     
     int Nh = hlist.size();
-    /*if (SmoothingLengthTest)
-    {
-        ofstream out("SmoothingLengthL2.csv");
-        out << "kernel,ch,field,lambda_over_D,method,"
-       "firstFluid,fluidEnd,count,h_over_lambda,"
-       "delta_over_h,L2,L2_area\n";
-    }*/
 
     if (SmoothingLengthTest)
     {
         ofstream out("SmoothingLengthL2.csv");
 
+        out << "kernel,ch,field,method,region,"
+            << "r_min_over_D,r_max_over_D,count,"
+            << "h_over_D,delta_over_h,L2,L2_area\n";
+    }
+
+    /*if (SmoothingLengthTest)
+    {
+        ofstream out("SmoothingLengthL2.csv");
+
         out << "kernel,ch,field,method,count,"
             "h_over_D,delta_over_h,L2,L2_area\n";
-    }
+    }*/
 
     double qAlow = 0.0;
     double qAhigh = 2.0;
